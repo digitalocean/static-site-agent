@@ -2,6 +2,8 @@
 
 An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deploys static websites to DigitalOcean App Platform.
 
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/YOUR_USERNAME/static-site-agent/tree/main)
+
 ## Features
 
 - **AI-Powered Site Generation**: Generate static websites based on natural language descriptions
@@ -10,9 +12,17 @@ An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deplo
 - **Automatic Containerization**: Creates Docker containers for your generated sites
 - **DigitalOcean Deployment**: Deploys to DigitalOcean App Platform with a single command
 
+## Quick Deploy
+
+Click the button above to deploy this agent directly to DigitalOcean App Platform. You'll need to:
+1. Connect your GitHub account and fork this repository
+2. Configure the required environment variables:
+   - `DO_GRADIENT_API_KEY` or `OPENAI_API_KEY` (for AI site generation)
+   - `DIGITALOCEAN_API_KEY` (for deploying generated sites)
+
 ## Prerequisites
 
-- Docker and Docker Compose installed
+- Docker and Docker Compose installed (for local development)
 - OpenAI API key OR DigitalOcean Gradient AI model access key
 - DigitalOcean API key (for deployment)
 - Docker network named `agents-net` (create with: `docker network create agents-net`)
