@@ -2,7 +2,7 @@
 
 An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deploys static websites to DigitalOcean App Platform.
 
-[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/digitalocean/static-site-agent/tree/main)
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/digitalocean/static-site-agent/tree/main&refcode=)
 
 ## Features
 

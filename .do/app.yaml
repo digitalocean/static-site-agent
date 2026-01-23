@@ -1,27 +1,28 @@
-name: static-site-agent
-region: nyc
-services:
-  - name: web
-    dockerfile_path: Dockerfile
-    source_dir: /
-    github:
-      branch: main
-      deploy_on_push: true
-    http_port: 5000
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    routes:
-      - path: /
-    envs:
-      - key: OPENAI_API_KEY
-        scope: RUN_TIME
-        type: SECRET
-      - key: DO_GRADIENT_API_KEY
-        scope: RUN_TIME
-        type: SECRET
-      - key: DIGITALOCEAN_API_KEY
-        scope: RUN_TIME
-        type: SECRET
-      - key: PYTHONUNBUFFERED
-        scope: RUN_TIME
-        value: "1"
+spec:
+  name: static-site-agent
+  region: nyc
+  services:
+    - name: web
+      dockerfile_path: Dockerfile
+      source_dir: /
+      github:
+        branch: main
+        deploy_on_push: true
+      http_port: 5000
+      instance_count: 1
+      instance_size_slug: basic-xxs
+      routes:
+        - path: /
+      envs:
+        - key: OPENAI_API_KEY
+          scope: RUN_TIME
+          type: SECRET
+        - key: DO_GRADIENT_API_KEY
+          scope: RUN_TIME
+          type: SECRET
+        - key: DIGITALOCEAN_API_KEY
+          scope: RUN_TIME
+          type: SECRET
+        - key: PYTHONUNBUFFERED
+          scope: RUN_TIME
+          value: "1"
