@@ -6,6 +6,7 @@ spec:
       dockerfile_path: Dockerfile
       source_dir: /
       github:
+        repo: digitalocean/static-site-agent
         branch: main
         deploy_on_push: true
       http_port: 5000
