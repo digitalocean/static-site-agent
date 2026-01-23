@@ -1,0 +1,36 @@
+{
+    "protocolVersion": "0.2.9",
+    "name": "Static Site Agent",
+    "description": "An A2A agent that generates, containerizes, and deploys static websites to DigitalOcean App Platform.",
+    "url": "http://localhost:5002/",
+    "preferredTransport": "JSONRPC",
+    "provider": {
+        "organization": "Nasiko AI Projects",
+        "url": "https://github.com/ashishsharma/nasiko"
+    },
+    "iconUrl": "http://localhost:5002/icon.png",
+    "version": "1.0.0",
+    "documentationUrl": "http://localhost:5002/docs",
+    "capabilities": {
+        "streaming": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": true,
+        "chat_agent": true
+    },
+    "securitySchemes": {},
+    "security": [],
+    "defaultInputModes": [
+        "text/plain"
+    ],
+    "defaultOutputModes": [
+        "text/plain"
+    ],
+    "skills": [
+        "Static site generation",
+        "Containerization",
+        "DigitalOcean deployment",
+        "Web design"
+    ],
+    "supportsAuthenticatedExtendedCard": false,
+    "signatures": []
+}

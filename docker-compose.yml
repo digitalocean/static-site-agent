@@ -1,0 +1,20 @@
+services:
+  static-site-agent:
+    build: .
+    container_name: static-site-agent
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DO_GRADIENT_API_KEY=${DO_GRADIENT_API_KEY}
+      - DIGITALOCEAN_API_KEY=${DIGITALOCEAN_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    stdin_open: true
+    ports:
+      - "5002:5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true
