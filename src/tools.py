@@ -12,7 +12,6 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel
-import requests
 
 # Setup logger
 logger = logging.getLogger("static-site-agent")
@@ -34,11 +33,13 @@ class ContainerizationResult(BaseModel):
     dockerfile_path: Optional[str] = None
 
 
-class DeploymentResult(BaseModel):
-    """Result of deployment to DigitalOcean"""
+class SpacesDeploymentResult(BaseModel):
+    """Result of deployment to DigitalOcean Spaces"""
     success: bool
-    app_url: Optional[str] = None
-    app_id: Optional[str] = None
+    bucket: Optional[str] = None
+    region: Optional[str] = None
+    index_url: Optional[str] = None
+    cdn_url: Optional[str] = None
     message: str
 
 
@@ -211,176 +212,209 @@ CMD ["nginx", "-g", "daemon off;"]
         )
 
 
-@tool
-def deploy_to_digitalocean(
-    site_path: str,
-    app_name: str,
-    do_api_key: Optional[str] = None,
-    region: str = "nyc"
-) -> DeploymentResult:
-    """
-    Deploy the containerized site to DigitalOcean App Platform.
-    
-    Args:
-        site_path: Path to the site directory with Dockerfile
-        app_name: Name for the DigitalOcean app
-        do_api_key: DigitalOcean API key (optional, will use environment variable if not provided)
-        region: DigitalOcean region (default: "nyc")
-    
-    Returns:
-        DeploymentResult with success status, app URL, and details
-    """
-    logger.info(f"Deploying site to DigitalOcean App Platform")
-    logger.info(f"App name: {app_name}")
-    logger.info(f"Region: {region}")
-    logger.info(f"Site path: {site_path}")
-    
+# File extensions to upload to Spaces (static site assets only; skip nginx.conf, Dockerfile)
+_SPACES_UPLOAD_EXTENSIONS = {".html", ".css", ".js", ".json", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".txt", ".xml", ".webmanifest"}
+# MIME types for common static assets
+_SPACES_CONTENT_TYPES = {
+    ".html": "text/html",
+    ".css": "text/css",
+    ".js": "application/javascript",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".eot": "application/vnd.ms-fontobject",
+    ".txt": "text/plain",
+    ".xml": "application/xml",
+    ".webmanifest": "application/manifest+json",
+}
+
+
+def _spaces_bucket_exists(client, bucket_name: str) -> bool:
+    """Return True if the bucket exists and we have access to it."""
     try:
-        # Get API key from environment if not provided
-        if not do_api_key:
-            do_api_key = os.getenv('DIGITALOCEAN_API_KEY')
-            logger.info("Using DigitalOcean API key from environment")
-        
-        if not do_api_key:
-            logger.error("✗ No DigitalOcean API key available")
-            return DeploymentResult(
-                success=False,
-                message="DigitalOcean API key is required. Please set DIGITALOCEAN_API_KEY environment variable or provide it directly."
-            )
-        
-        # Create a DigitalOcean App Platform spec
-        app_spec = {
-            "name": app_name,
-            "region": region,
-            "services": [
-                {
-                    "name": "web",
-                    "github": {
-                        "repo": "",
-                        "branch": "main",
-                        "deploy_on_push": True
-                    },
-                    "dockerfile_path": "Dockerfile",
-                    "source_dir": "/",
-                    "http_port": 80,
-                    "instance_count": 1,
-                    "instance_size_slug": "basic-xxs",
-                    "routes": [
-                        {
-                            "path": "/"
-                        }
-                    ]
-                }
-            ],
-            "static_sites": [
-                {
-                    "name": app_name,
-                    "build_command": "",
-                    "source_dir": "/",
-                    "output_dir": "/",
-                    "index_document": "index.html",
-                    "error_document": "index.html",
-                    "routes": [
-                        {
-                            "path": "/"
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        # Note: For actual deployment, we would need to:
-        # 1. Push the code to a git repository (GitHub, GitLab, etc.)
-        # 2. Create the app on DigitalOcean using their API
-        # 3. Link the repository to the app
-        
-        headers = {
-            "Authorization": f"Bearer {do_api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        # Actually create the app using DigitalOcean API
-        logger.info("Creating app on DigitalOcean App Platform...")
-        
-        # For DigitalOcean App Platform, we'll use their static site feature
-        # which can serve static files directly
-        app_spec = {
-            "name": app_name,
-            "region": region,
-            "static_sites": [
-                {
-                    "name": app_name,
-                    "build_command": "",
-                    "source_dir": "/",
-                    "output_dir": "/",
-                    "index_document": "index.html",
-                    "error_document": "index.html",
-                    "github": {
-                        "repo": "",
-                        "branch": "main",
-                        "deploy_on_push": True
-                    }
-                }
-            ]
-        }
-        
-        try:
-            response = requests.post(
-                "https://api.digitalocean.com/v2/apps",
-                headers=headers,
-                json={"spec": app_spec},
-                timeout=30
-            )
-            
-            if response.status_code in [200, 201]:
-                app_data = response.json()
-                app_id = app_data.get("app", {}).get("id")
-                app_url = app_data.get("app", {}).get("default_ingress", f"https://{app_name}.ondigitalocean.app")
-                
-                logger.info(f"✓ App created successfully!")
-                logger.info(f"  App ID: {app_id}")
-                logger.info(f"  App URL: {app_url}")
-                
-                return DeploymentResult(
-                    success=True,
-                    app_url=app_url,
-                    app_id=app_id,
-                    message=f"""Successfully created app on DigitalOcean App Platform!
-
-App Details:
-- Name: {app_name}
-- Region: {region}
-- App ID: {app_id}
-- URL: {app_url}
-
-NOTE: To complete deployment, you need to:
-1. Create a GitHub repository
-2. Copy your site files from {site_path} to the repository
-3. Link the repository to the app in DigitalOcean control panel
-4. The app will auto-deploy from the repository
-
-Alternatively, you can upload files directly via the DigitalOcean control panel."""
-                )
-            else:
-                error_msg = response.json().get("message", response.text)
-                logger.error(f"✗ Failed to create app: {error_msg}")
-                
-                return DeploymentResult(
-                    success=False,
-                    message=f"Failed to create app on DigitalOcean: {error_msg}"
-                )
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"✗ API request failed: {str(e)}")
-            return DeploymentResult(
-                success=False,
-                message=f"Failed to connect to DigitalOcean API: {str(e)}"
-            )
-        
+        client.head_bucket(Bucket=bucket_name)
+        return True
     except Exception as e:
-        return DeploymentResult(
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict):
+            code = (resp.get("Error") or {}).get("Code") if isinstance(resp.get("Error"), dict) else None
+            if code in ("404", "NoSuchBucket"):
+                return False
+        raise
+
+
+@tool
+def deploy_to_spaces(
+    site_path: str,
+    bucket_name: str,
+    region: str = "nyc3",
+    spaces_access_key: Optional[str] = None,
+    spaces_secret_key: Optional[str] = None,
+    make_public: bool = True,
+    create_bucket_if_missing: bool = True,
+) -> SpacesDeploymentResult:
+    """
+    Upload the static site files to a DigitalOcean Space (S3-compatible). This actually
+    saves the site to the user's Space so it can be served publicly. If the bucket
+    does not exist and create_bucket_if_missing is True, the bucket is created first.
+
+    Args:
+        site_path: Path to the generated static site directory (from generate_static_site).
+        bucket_name: Name of the DigitalOcean Space (bucket) to upload to. 3-63 chars, lowercase letters/numbers/dashes, must start with letter or number. Created automatically if missing and create_bucket_if_missing is True.
+        region: Spaces region (e.g. nyc3, sfo3, ams3). Default nyc3.
+        spaces_access_key: Spaces S3-compatible access key (optional; uses SPACES_ACCESS_KEY_ID env if not set).
+        spaces_secret_key: Spaces S3-compatible secret key (optional; uses SPACES_SECRET_ACCESS_KEY env if not set).
+        make_public: If True, set object ACL to public-read so the site is viewable. Default True.
+        create_bucket_if_missing: If True, create the Space (bucket) via the API when it does not exist. Default True.
+
+    Returns:
+        SpacesDeploymentResult with index_url and instructions.
+    """
+    logger.info(f"Deploying static site to Spaces bucket '{bucket_name}' in {region}")
+    logger.info(f"Site path: {site_path}")
+
+    try:
+        if not spaces_access_key:
+            spaces_access_key = os.getenv("SPACES_ACCESS_KEY_ID") or os.getenv("SPACES_KEY")
+        if not spaces_secret_key:
+            spaces_secret_key = os.getenv("SPACES_SECRET_ACCESS_KEY") or os.getenv("SPACES_SECRET")
+
+        if not spaces_access_key or not spaces_secret_key:
+            logger.error("✗ Spaces credentials not available")
+            return SpacesDeploymentResult(
+                success=False,
+                message="Spaces credentials required. Set SPACES_ACCESS_KEY_ID and SPACES_SECRET_ACCESS_KEY (or SPACES_KEY / SPACES_SECRET), or pass them to this tool."
+            )
+
+        if not os.path.isdir(site_path):
+            return SpacesDeploymentResult(
+                success=False,
+                message=f"Site path does not exist or is not a directory: {site_path}"
+            )
+
+        try:
+            import boto3
+            from botocore.config import Config
+            from botocore.exceptions import ClientError
+        except ImportError:
+            return SpacesDeploymentResult(
+                success=False,
+                message="boto3 is required for Spaces deployment. Install with: pip install boto3"
+            )
+
+        endpoint_url = f"https://{region}.digitaloceanspaces.com"
+        client = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=spaces_access_key,
+            aws_secret_access_key=spaces_secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+
+        # Create bucket if it doesn't exist and we're allowed to
+        if not _spaces_bucket_exists(client, bucket_name):
+            if create_bucket_if_missing:
+                try:
+                    client.create_bucket(Bucket=bucket_name)
+                    logger.info(f"✓ Created Space (bucket) '{bucket_name}' in {region}")
+                except ClientError as e:
+                    code = e.response.get("Error", {}).get("Code", "")
+                    if code == "BucketAlreadyExists":
+                        # Another user owns a bucket with this name
+                        return SpacesDeploymentResult(
+                            success=False,
+                            bucket=bucket_name,
+                            region=region,
+                            message=f"Bucket name '{bucket_name}' is already taken by another account. Choose a different bucket name (globally unique across DigitalOcean Spaces)."
+                        )
+                    if code == "InvalidBucketName":
+                        return SpacesDeploymentResult(
+                            success=False,
+                            bucket=bucket_name,
+                            region=region,
+                            message="Invalid bucket name. Use 3-63 characters: lowercase letters, numbers, dashes only; must start with a letter or number."
+                        )
+                    return SpacesDeploymentResult(
+                        success=False,
+                        bucket=bucket_name,
+                        region=region,
+                        message=f"Failed to create bucket: {e.response.get('Error', {}).get('Message', str(e))}"
+                    )
+            else:
+                return SpacesDeploymentResult(
+                    success=False,
+                    bucket=bucket_name,
+                    region=region,
+                    message=f"Bucket '{bucket_name}' does not exist. Create it in the DigitalOcean control panel (Spaces), or set create_bucket_if_missing=True to create it via the API."
+                )
+
+        # Collect and upload only static web files
+        uploaded = []
+        site_path_abs = os.path.abspath(site_path)
+        for root, _dirs, files in os.walk(site_path_abs):
+            for name in files:
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, site_path_abs)
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in _SPACES_UPLOAD_EXTENSIONS:
+                    logger.debug(f"Skipping non-web file: {rel}")
+                    continue
+                key = rel.replace("\\", "/")
+                content_type = _SPACES_CONTENT_TYPES.get(ext, "application/octet-stream")
+                extra = {"ContentType": content_type}
+                if make_public:
+                    extra["ACL"] = "public-read"
+                client.upload_file(path, bucket_name, key, ExtraArgs=extra)
+                uploaded.append(key)
+                logger.info(f"  Uploaded: {key}")
+
+        if not uploaded:
+            return SpacesDeploymentResult(
+                success=False,
+                bucket=bucket_name,
+                region=region,
+                message="No static web files found to upload (expected at least index.html, styles.css)."
+            )
+
+        # Public URL: bucket and region form the host
+        base_url = f"https://{bucket_name}.{region}.digitaloceanspaces.com"
+        index_url = f"{base_url}/index.html"
+        cdn_url = f"https://{bucket_name}.{region}.cdn.digitaloceanspaces.com"
+
+        logger.info(f"✓ Uploaded {len(uploaded)} file(s) to Space '{bucket_name}'")
+        logger.info(f"  Index URL: {index_url}")
+
+        return SpacesDeploymentResult(
+            success=True,
+            bucket=bucket_name,
+            region=region,
+            index_url=index_url,
+            cdn_url=cdn_url,
+            message=f"""Successfully uploaded the static site to your DigitalOcean Space.
+
+- Bucket: {bucket_name} (region: {region})
+- Files uploaded: {', '.join(uploaded)}
+- View your site: {index_url}
+- CDN URL (if CDN is enabled on the Space): {cdn_url}/index.html
+
+Note: Spaces does not support default index documents. Use the index URL above, or enable the Space CDN and optionally add a custom domain in the DigitalOcean control panel."""
+        )
+    except Exception as e:
+        logger.error(f"✗ Spaces deployment failed: {str(e)}", exc_info=True)
+        return SpacesDeploymentResult(
             success=False,
-            message=f"Error deploying to DigitalOcean: {str(e)}"
+            bucket=bucket_name,
+            region=region,
+            message=f"Failed to deploy to Spaces: {str(e)}"
         )
 
 

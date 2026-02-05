@@ -1,7 +1,7 @@
 {
     "protocolVersion": "0.2.9",
     "name": "Static Site Agent",
-    "description": "An A2A agent that generates, containerizes, and deploys static websites to DigitalOcean App Platform.",
+    "description": "An A2A agent that generates, containerizes, and deploys static websites to DigitalOcean Spaces.",
     "url": "http://localhost:5002/",
     "preferredTransport": "JSONRPC",
     "provider": {
@@ -28,7 +28,7 @@
     "skills": [
         "Static site generation",
         "Containerization",
-        "DigitalOcean deployment",
+        "DigitalOcean Spaces deployment",
         "Web design"
     ],
     "supportsAuthenticatedExtendedCard": false,

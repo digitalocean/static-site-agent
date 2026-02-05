@@ -1,6 +1,6 @@
 # Static Site Agent
 
-An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deploys static websites to DigitalOcean App Platform.
+An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deploys static websites to **DigitalOcean Spaces**.
 
 [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/digitalocean/static-site-agent/tree/main&refcode=)
 
@@ -10,7 +10,7 @@ An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deplo
 - **Multiple Site Types**: Supports portfolio, landing page, blog, and business sites
 - **Style Customization**: Apply style hints like "modern and minimalist", "colorful and playful", or "professional"
 - **Automatic Containerization**: Creates Docker containers for your generated sites
-- **DigitalOcean Deployment**: Deploys to DigitalOcean App Platform with a single command
+- **DigitalOcean Spaces Deployment**: Uploads the generated site directly to your DigitalOcean Space (creates the bucket if needed and saves the site so it can be served publicly)
 
 ## Quick Deploy
 
@@ -18,13 +18,46 @@ Click the button above to deploy this agent directly to DigitalOcean App Platfor
 1. Connect your GitHub account and fork this repository
 2. Configure the required environment variables:
    - `DO_GRADIENT_API_KEY` or `OPENAI_API_KEY` (for AI site generation)
-   - `DIGITALOCEAN_API_KEY` (for deploying generated sites)
+   - `SPACES_ACCESS_KEY_ID` and `SPACES_SECRET_ACCESS_KEY` (for uploading sites to your DigitalOcean Space)
+
+## Local Deploy (no GitHub)
+
+If you prefer deploying from your local machine without GitHub, use a container image and `doctl`:
+
+1. Build the image locally:
+```bash
+docker build -t static-site-agent:latest .
+```
+
+2. Push the image to a registry (choose one):
+- Docker Hub (public):
+```bash
+docker tag static-site-agent:latest docker.io/<your_dockerhub_username>/static-site-agent:latest
+docker push docker.io/<your_dockerhub_username>/static-site-agent:latest
+```
+- DigitalOcean Container Registry:
+```bash
+doctl registry create <registry-name>   # if you don't have one
+doctl registry login
+docker tag static-site-agent:latest registry.digitalocean.com/<registry-name>/static-site-agent:latest
+docker push registry.digitalocean.com/<registry-name>/static-site-agent:latest
+```
+
+3. Update the image in `.do/deploy.template.yaml` to match your pushed image.
+
+4. Create the app using `doctl`:
+```bash
+doctl auth switch --context <your-context>
+doctl apps create --spec .do/deploy.template.yaml
+```
+
+This path avoids GitHub permissions entirely by deploying from your own container image.
 
 ## Prerequisites
 
 - Docker and Docker Compose installed (for local development)
 - OpenAI API key OR DigitalOcean Gradient AI model access key
-- DigitalOcean API key (for deployment)
+- Spaces access keys (for deploying generated sites to your Space; create under API → Spaces Keys)
 - Docker network named `agents-net` (create with: `docker network create agents-net`)
 
 ## Setup
@@ -39,14 +72,18 @@ cd static-site-agent
 **Option A: Using DigitalOcean Gradient AI (Recommended)**
 ```bash
 export DO_GRADIENT_API_KEY="your-do-model-access-key"
-export DIGITALOCEAN_API_KEY="your-digitalocean-api-key"
+export SPACES_ACCESS_KEY_ID="your-spaces-access-key"
+export SPACES_SECRET_ACCESS_KEY="your-spaces-secret-key"
 ```
 
 **Option B: Using OpenAI**
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
-export DIGITALOCEAN_API_KEY="your-digitalocean-api-key"
+export SPACES_ACCESS_KEY_ID="your-spaces-access-key"
+export SPACES_SECRET_ACCESS_KEY="your-spaces-secret-key"
 ```
+
+Spaces keys are created in the DigitalOcean control panel under **API** → **Spaces Keys**. The agent can create the Space (bucket) automatically if it doesn't exist.
 
 3. Build and run the agent:
 ```bash
@@ -81,10 +118,9 @@ Generate a colorful and playful landing page for a kids' app with a signup form
 Build a professional blog site with a dark theme
 ```
 
-### Example 4: Complete Deployment
+### Example 4: Deploy to Spaces (saves site to your Space)
 ```
-Create a landing page for a SaaS product with a modern design, 
-containerize it, and deploy it to DigitalOcean using my API key: do_xxxxx
+Create a landing page and upload it to my DigitalOcean Space named my-website in nyc3
 ```
 
 ## How It Works
@@ -99,9 +135,9 @@ The agent uses three main tools:
    - Parameters: `site_path`, `image_name`
    - Outputs: Dockerfile and built Docker image
 
-3. **deploy_to_digitalocean**: Deploys to DigitalOcean App Platform
-   - Parameters: `site_path`, `app_name`, `do_api_key`, `region`
-   - Outputs: Deployment instructions and app URL
+3. **deploy_to_spaces**: Uploads the static site files to a DigitalOcean Space (S3-compatible). Creates the bucket via the API if it doesn't exist, then uploads the files.
+   - Parameters: `site_path`, `bucket_name`, `region` (e.g. nyc3), optional `spaces_access_key` / `spaces_secret_key` (or use env), `create_bucket_if_missing` (default True)
+   - Outputs: Index URL and CDN URL for the deployed site.
 
 ## Architecture
 
@@ -161,16 +197,14 @@ Example request:
 
 ## Environment Variables
 
-- `GRADIENT_API_KEY`: Required for AI-powered site generation using Gradient AI
-- `GRADIENT_BASE_URL`: Optional, defaults to `https://api.gradient.ai/api/v1`
-- `DIGITALOCEAN_API_KEY`: Required for deployment to DigitalOcean
+- `OPENAI_API_KEY` or `DO_GRADIENT_API_KEY`: Required for AI-powered site generation
+- `SPACES_ACCESS_KEY_ID` and `SPACES_SECRET_ACCESS_KEY`: Required to upload sites to DigitalOcean Spaces (create under API → Spaces Keys in the DO control panel). Alternatively `SPACES_KEY` and `SPACES_SECRET` are supported.
 
 ## Notes
 
 - Generated sites are created in temporary directories with the prefix `static-site-`
 - Docker must be available for containerization to work
-- Full automated deployment to DigitalOcean requires additional setup (git repository integration)
-- The agent provides manual deployment instructions as an alternative
+- **Spaces deployment** uploads the generated files directly to your Space and returns a public URL; no GitHub required. The bucket is created automatically if it doesn't exist.
 
 ## Troubleshooting
 

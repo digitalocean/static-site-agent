@@ -5,7 +5,8 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DO_GRADIENT_API_KEY=${DO_GRADIENT_API_KEY}
-      - DIGITALOCEAN_API_KEY=${DIGITALOCEAN_API_KEY}
+      - SPACES_ACCESS_KEY_ID=${SPACES_ACCESS_KEY_ID}
+      - SPACES_SECRET_ACCESS_KEY=${SPACES_SECRET_ACCESS_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     stdin_open: true

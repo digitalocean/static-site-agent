@@ -12,7 +12,7 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.callbacks.base import BaseCallbackHandler
 
-from tools import generate_static_site, containerize_site, deploy_to_digitalocean
+from tools import generate_static_site, containerize_site, deploy_to_spaces
 
 # Setup logger
 logger = logging.getLogger("static-site-agent")
@@ -57,11 +57,15 @@ class DetailedLoggingCallback(BaseCallbackHandler):
 class Agent:
     def __init__(self):
         self.name = "Static Site Agent"
-        self.do_api_key = os.getenv('DIGITALOCEAN_API_KEY', '')
+        self.spaces_configured = bool(
+            os.getenv('SPACES_ACCESS_KEY_ID') or os.getenv('SPACES_KEY')
+        ) and bool(
+            os.getenv('SPACES_SECRET_ACCESS_KEY') or os.getenv('SPACES_SECRET')
+        )
         self.chat_history = []
         
         # 1. Define Tools
-        self.tools = [generate_static_site, containerize_site, deploy_to_digitalocean]
+        self.tools = [generate_static_site, containerize_site, deploy_to_spaces]
         
         # 2. Setup LLM
         # Check which API key is available
@@ -83,26 +87,26 @@ class Agent:
             raise ValueError("Either OPENAI_API_KEY or DO_GRADIENT_API_KEY must be set")
         
         # 3. Setup Agent
-        do_key_info = f"Note: DigitalOcean API key is {'configured' if self.do_api_key else 'NOT configured'}." if self.do_api_key else "The DigitalOcean API key is not currently set, so deployment won't work unless provided."
+        spaces_info = "Spaces credentials (SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY) are configured - deploy_to_spaces will work." if self.spaces_configured else "Spaces credentials are NOT set - deploy_to_spaces requires SPACES_ACCESS_KEY_ID and SPACES_SECRET_ACCESS_KEY (or user can pass them when asking to deploy to Spaces)."
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", f"""You are a Static Site Generation and Deployment Agent with access to these tools:
 
 1. generate_static_site(site_type, style_hints, site_name) - Creates actual HTML/CSS files
 2. containerize_site(site_path, image_name) - Creates Docker containers
-3. deploy_to_digitalocean(site_path, app_name, do_api_key, region) - Deploys to DigitalOcean
+3. deploy_to_spaces(site_path, bucket_name, region, spaces_access_key, spaces_secret_key, make_public, create_bucket_if_missing) - Uploads the static site files to the user's DigitalOcean Space. If the bucket does not exist, it is created automatically (create_bucket_if_missing=True by default). Use when the user wants to save or deploy the site to Spaces. User provides bucket name (3-63 chars, lowercase/numbers/dashes) and optionally region (default nyc3).
 
 CRITICAL INSTRUCTIONS:
 - When user asks for a site, IMMEDIATELY call generate_static_site - don't just talk about it!
-- When user wants to deploy, call the actual tools in sequence
-- After each tool completes, tell the user what happened based on the tool's output
-- {do_key_info}
+- When user wants to deploy to Spaces (or "save to Spaces", "put on my Space", "upload to DigitalOcean Spaces"), use deploy_to_spaces(site_path, bucket_name, ...) - this uploads the files and creates the bucket if it doesn't exist. You need site_path from generate_static_site and a bucket_name (ask if not provided).
+- After each tool completes, tell the user what happened based on the tool's output.
+- {spaces_info}
 
-Example flow:
-User: "Create a portfolio site"
-You: [Call generate_static_site with appropriate parameters] then tell user it's done
-User: "deploy it"
-You: [Call containerize_site] [Call deploy_to_digitalocean] then report results
+Example flow for Spaces:
+User: "Create a landing page and put it on my Space"
+You: [Call generate_static_site] then [Call deploy_to_spaces with site_path from result and ask for bucket_name if needed]
+User: "Deploy that to my Space called my-website in nyc3"
+You: [Call deploy_to_spaces(site_path=<from previous step>, bucket_name="my-website", region="nyc3")]
 
 ALWAYS use the tools - never simulate or describe actions!"""),
             MessagesPlaceholder(variable_name="chat_history"),
