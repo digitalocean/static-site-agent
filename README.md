@@ -67,20 +67,21 @@ This path avoids GitHub permissions entirely by deploying from your own containe
 cd static-site-agent
 ```
 
-2. Set your environment variables (choose one):
+2. Set your environment variables so the container can create buckets and upload to Spaces (choose one):
 
-**Option A: Using DigitalOcean Gradient AI (Recommended)**
+**Option A: Using a `.env` file (recommended for Docker)**  
+Copy `.env.example` to `.env` and fill in your keys. Docker Compose loads `.env` automatically when you run `docker compose up`.
+```bash
+cp .env.example .env
+# Edit .env with your DO_GRADIENT_API_KEY or OPENAI_API_KEY and SPACES_* keys
+```
+
+**Option B: Export in your shell**
 ```bash
 export DO_GRADIENT_API_KEY="your-do-model-access-key"
 export SPACES_ACCESS_KEY_ID="your-spaces-access-key"
 export SPACES_SECRET_ACCESS_KEY="your-spaces-secret-key"
-```
-
-**Option B: Using OpenAI**
-```bash
-export OPENAI_API_KEY="your-openai-api-key"
-export SPACES_ACCESS_KEY_ID="your-spaces-access-key"
-export SPACES_SECRET_ACCESS_KEY="your-spaces-secret-key"
+# Or use OPENAI_API_KEY instead of DO_GRADIENT_API_KEY for OpenAI
 ```
 
 Spaces keys are created in the DigitalOcean control panel under **API** → **Spaces Keys**. The agent can create the Space (bucket) automatically if it doesn't exist.

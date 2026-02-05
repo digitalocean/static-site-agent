@@ -2,20 +2,39 @@
 Static Site Agent Logic - Using LangChain
 """
 import os
+import re
+import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.memory import ConversationBufferMemory
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.callbacks.base import BaseCallbackHandler
 
 from tools import generate_static_site, containerize_site, deploy_to_spaces
 
 # Setup logger
 logger = logging.getLogger("static-site-agent")
+
+
+def _extract_first_json(s: str) -> Optional[str]:
+    """Extract the first complete JSON object (balanced braces) from a string."""
+    s = s.strip()
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return None
 
 
 class DetailedLoggingCallback(BaseCallbackHandler):
@@ -72,25 +91,51 @@ class Agent:
         openai_key = os.getenv('OPENAI_API_KEY')
         do_gradient_key = os.getenv('DO_GRADIENT_API_KEY')
         
+        self.use_gradient_tool_loop = bool(do_gradient_key)
         if openai_key:
-            # Use OpenAI
+            # Use OpenAI with native tool calling
             self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
         elif do_gradient_key:
-            # Use DigitalOcean Gradient AI Platform
+            # Use DigitalOcean Gradient; we'll use a custom JSON tool loop (no ReAct parsing)
             self.llm = ChatOpenAI(
                 model="llama3.3-70b-instruct",
-                temperature=0.7,
+                temperature=0.2,
                 api_key=do_gradient_key,
                 base_url="https://inference.do-ai.run/v1"
             )
         else:
             raise ValueError("Either OPENAI_API_KEY or DO_GRADIENT_API_KEY must be set")
-        
-        # 3. Setup Agent
-        spaces_info = "Spaces credentials (SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY) are configured - deploy_to_spaces will work." if self.spaces_configured else "Spaces credentials are NOT set - deploy_to_spaces requires SPACES_ACCESS_KEY_ID and SPACES_SECRET_ACCESS_KEY (or user can pass them when asking to deploy to Spaces)."
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a Static Site Generation and Deployment Agent with access to these tools:
+
+        spaces_info = "Spaces credentials are configured - deploy_to_spaces will work." if self.spaces_configured else "Spaces credentials are NOT set - deploy_to_spaces needs SPACES_ACCESS_KEY_ID and SPACES_SECRET_ACCESS_KEY."
+
+        if self.use_gradient_tool_loop:
+            # Custom tool loop for Gradient: we ask the LLM for TOOL_CALL + JSON or FINAL_ANSWER, parse, and run tools.
+            self.tools_by_name = {t.name: t for t in self.tools}
+            self.gradient_system_prompt = f"""You are a Static Site Generation and Deployment Agent. You MUST call tools by outputting exactly one of these two formats.
+
+To call a tool, output on a single line:
+TOOL_CALL
+Then on the next line(s), output a single JSON object: {{"tool": "<tool_name>", "input": {{ ... tool arguments ... }}}}
+
+To finish and reply to the user, output:
+FINAL_ANSWER
+Then on the next line(s), your final reply to the user.
+
+Available tools:
+1. generate_static_site - Args: site_type (e.g. "portfolio", "landing page", "blog", "business"), style_hints (optional string), site_name (optional, default "mysite"). Returns site_path.
+2. containerize_site - Args: site_path (from generate_static_site), image_name (optional).
+3. deploy_to_spaces - Args: site_path, bucket_name (3-63 chars, lowercase/dashes), region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional), make_public (default true), create_bucket_if_missing (default true). Uploads the site to DigitalOcean Spaces.
+
+Rules:
+- When the user asks for a site, immediately output a TOOL_CALL for generate_static_site. Use the returned site_path in later steps.
+- When the user wants to deploy to Spaces, output TOOL_CALL for deploy_to_spaces with site_path (from a previous result) and bucket_name. {spaces_info}
+- Output only TOOL_CALL + JSON or FINAL_ANSWER + text. No other commentary before or after."""
+            self.agent_executor = None
+            logger.info("Using custom JSON tool loop for Gradient (tools will be executed)")
+        else:
+            # Native tool-calling agent (OpenAI)
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"""You are a Static Site Generation and Deployment Agent with access to these tools:
 
 1. generate_static_site(site_type, style_hints, site_name) - Creates actual HTML/CSS files
 2. containerize_site(site_path, image_name) - Creates Docker containers
@@ -102,53 +147,121 @@ CRITICAL INSTRUCTIONS:
 - After each tool completes, tell the user what happened based on the tool's output.
 - {spaces_info}
 
-Example flow for Spaces:
-User: "Create a landing page and put it on my Space"
-You: [Call generate_static_site] then [Call deploy_to_spaces with site_path from result and ask for bucket_name if needed]
-User: "Deploy that to my Space called my-website in nyc3"
-You: [Call deploy_to_spaces(site_path=<from previous step>, bucket_name="my-website", region="nyc3")]
-
 ALWAYS use the tools - never simulate or describe actions!"""),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("user", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("user", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
+            agent = create_tool_calling_agent(self.llm, self.tools, prompt)
+            self.agent_executor = AgentExecutor(
+                agent=agent,
+                tools=self.tools,
+                verbose=True,
+                callbacks=[DetailedLoggingCallback()],
+                handle_parsing_errors=True,
+            )
+            logger.info("Using tool-calling agent (OpenAI)")
         
-        agent = create_tool_calling_agent(self.llm, self.tools, prompt)
-        self.agent_executor = AgentExecutor(
-            agent=agent, 
-            tools=self.tools, 
-            verbose=True,
-            callbacks=[DetailedLoggingCallback()]
-        )
-        
+    def _run_gradient_tool_loop(self, message_text: str) -> str:
+        """Custom loop for Gradient: ask LLM for TOOL_CALL+JSON or FINAL_ANSWER, execute tools, repeat."""
+        max_iterations = 15
+        messages: List = [
+            SystemMessage(content=self.gradient_system_prompt),
+            HumanMessage(content=message_text),
+        ]
+        for step in range(max_iterations):
+            response = self.llm.invoke(messages)
+            content = response.content if hasattr(response, "content") else str(response)
+            if not content or not content.strip():
+                continue
+            content = content.strip()
+            logger.info(f"Gradient step {step + 1} LLM output (first 400 chars): {content[:400]}")
+
+            # Parse FINAL_ANSWER
+            if "FINAL_ANSWER" in content.upper():
+                idx = content.upper().find("FINAL_ANSWER")
+                rest = content[idx + len("FINAL_ANSWER"):].strip()
+                # Take the rest of the line or block as the answer
+                rest = rest.lstrip(":\n\t").strip()
+                if rest:
+                    return rest
+                return content  # fallback
+
+            # Parse TOOL_CALL + JSON or a raw JSON object
+            json_str = None
+            tool_call_match = re.search(r"TOOL_CALL\s*\n?\s*(\{[\s\S]*\})", content, re.IGNORECASE)
+            if tool_call_match:
+                json_str = _extract_first_json(tool_call_match.group(1))
+            if not json_str:
+                code_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", content)
+                if code_match:
+                    json_str = _extract_first_json(code_match.group(1))
+            if not json_str:
+                brace = content.find('{"tool"')
+                if brace < 0:
+                    brace = content.find("{'tool'")
+                if brace >= 0:
+                    json_str = _extract_first_json(content[brace:])
+            if not json_str:
+                # No tool call parsed; treat as final answer
+                return content
+
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid JSON from LLM: {e}. Sending back to LLM.")
+                messages.append(AIMessage(content=content))
+                messages.append(HumanMessage(content=f"Your last response did not contain valid JSON. Error: {e}. Output a valid TOOL_CALL with JSON or FINAL_ANSWER."))
+                continue
+
+            tool_name = data.get("tool") or data.get("tool_name")
+            tool_input = data.get("input") or data.get("arguments") or {}
+            if not tool_name or tool_name not in self.tools_by_name:
+                messages.append(AIMessage(content=content))
+                messages.append(HumanMessage(content=f"Unknown tool '{tool_name}'. Use one of: {', '.join(self.tools_by_name)}. Output TOOL_CALL with valid tool and input, or FINAL_ANSWER."))
+                continue
+
+            tool = self.tools_by_name[tool_name]
+            try:
+                logger.info(f"TOOL EXECUTION: {tool_name} with input {tool_input}")
+                result = tool.invoke(tool_input)
+                obs = str(result) if not hasattr(result, "model_dump") else str(result.model_dump())
+                obs = obs[:2000]  # cap length
+            except Exception as e:
+                obs = f"Tool error: {e}"
+                logger.exception(f"Tool {tool_name} failed")
+            messages.append(AIMessage(content=content))
+            messages.append(HumanMessage(content=f"Observation: {obs}\n\nIf you need to call another tool, output TOOL_CALL and JSON. Otherwise output FINAL_ANSWER and your reply to the user."))
+
+        return "I reached the maximum number of steps. Please try a simpler request or ask again."
+
     def process_message(self, message_text: str) -> str:
         """
-        Process the incoming message using the LangChain agent.
+        Process the incoming message using the LangChain agent (OpenAI) or custom tool loop (Gradient).
         """
         try:
             logger.info(f"\n{'#'*80}\n# NEW MESSAGE FROM USER\n{'#'*80}")
             logger.info(f"User Input: {message_text}")
             logger.info(f"Chat History Length: {len(self.chat_history)} messages")
-            
-            result = self.agent_executor.invoke({
-                "input": message_text,
-                "chat_history": self.chat_history
-            })
-            
-            # Add to chat history
+
+            if self.use_gradient_tool_loop:
+                output = self._run_gradient_tool_loop(message_text)
+            else:
+                result = self.agent_executor.invoke({
+                    "input": message_text,
+                    "chat_history": self.chat_history
+                })
+                output = result["output"]
+
             self.chat_history.append(HumanMessage(content=message_text))
-            self.chat_history.append(AIMessage(content=result["output"]))
-            
-            # Keep only last 10 messages to avoid token limits
+            self.chat_history.append(AIMessage(content=output))
             if len(self.chat_history) > 20:
                 self.chat_history = self.chat_history[-20:]
                 logger.info("Chat history trimmed to 20 messages")
-            
+
             logger.info(f"\n{'#'*80}\n# AGENT RESPONSE\n{'#'*80}")
-            logger.info(f"Response: {result['output'][:500]}...")
-            
-            return result["output"]
+            logger.info(f"Response: {output[:500]}...")
+            return output
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}", exc_info=True)
             return f"Error processing message: {str(e)}"
