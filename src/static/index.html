@@ -362,7 +362,9 @@
             const urlRegex = /(https?:\/\/[^\s<>"\']+)/g;
             const urls = [];
             const withPlaceholders = text.replace(urlRegex, (url) => {
-                urls.push(url);
+                // Strip trailing sentence punctuation so the link href works (e.g. "https://...index.html." -> "https://...index.html")
+                const cleanUrl = url.replace(/[.,;:!?]+$/, '');
+                urls.push(cleanUrl);
                 return '\u0001URL' + (urls.length - 1) + '\u0001';
             });
             const escaped = escapeHtml(withPlaceholders);
