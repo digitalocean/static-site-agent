@@ -3,8 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Static Site Agent - Chat Interface</title>
+    <title>Static Site Agent – DigitalOcean</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --do-blue: #0080ff;
+            --do-blue-hover: #0069d9;
+            --do-blue-light: #e6f2ff;
+            --do-bg: #f5f7fa;
+            --do-surface: #ffffff;
+            --do-border: #e5e8eb;
+            --do-text: #24292f;
+            --do-text-secondary: #57606a;
+            --do-success: #1a7f37;
+            --do-warning-bg: #fff8e6;
+            --do-warning-text: #7d4e00;
+            --do-error-bg: #ffebe9;
+            --do-error-text: #cf222e;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -12,66 +31,65 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--do-bg);
+            color: var(--do-text);
             height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-
-        .chat-container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            width: 100%;
-            max-width: 800px;
-            height: 90vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
         }
 
         .chat-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            text-align: center;
+            background: var(--do-surface);
+            border-bottom: 1px solid var(--do-border);
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
         }
 
-        .chat-header h1 {
-            font-size: 1.5rem;
-            margin-bottom: 5px;
+        .chat-header-logo {
+            height: 28px;
+            width: auto;
+            display: block;
         }
 
-        .chat-header p {
-            font-size: 0.9rem;
-            opacity: 0.9;
+        .chat-header-divider {
+            width: 1px;
+            height: 24px;
+            background: var(--do-border);
+        }
+
+        .chat-header-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--do-text);
+        }
+
+        .chat-header-subtitle {
+            font-size: 13px;
+            font-weight: 400;
+            color: var(--do-text-secondary);
+            margin-top: 2px;
         }
 
         .chat-messages {
             flex: 1;
             overflow-y: auto;
-            padding: 20px;
-            background: #f7f7f8;
+            padding: 24px;
         }
 
         .message {
-            margin-bottom: 15px;
+            margin-bottom: 16px;
             display: flex;
-            animation: slideIn 0.3s ease-out;
+            animation: messageIn 0.2s ease-out;
         }
 
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+        @keyframes messageIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .message.user {
@@ -79,119 +97,128 @@
         }
 
         .message-content {
-            max-width: 70%;
+            max-width: 75%;
             padding: 12px 16px;
-            border-radius: 18px;
+            border-radius: 8px;
             word-wrap: break-word;
+            font-size: 14px;
+            line-height: 1.5;
         }
 
         .message.user .message-content {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--do-blue);
             color: white;
-            border-bottom-right-radius: 4px;
         }
 
         .message.agent .message-content {
-            background: white;
-            color: #333;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-            border-bottom-left-radius: 4px;
+            background: var(--do-surface);
+            color: var(--do-text);
+            border: 1px solid var(--do-border);
         }
 
         .message.system .message-content {
-            background: #fff3cd;
-            color: #856404;
+            background: var(--do-warning-bg);
+            color: var(--do-warning-text);
             max-width: 100%;
             text-align: center;
-            font-size: 0.9rem;
+            font-size: 13px;
+            border: none;
         }
 
         .message.error .message-content {
-            background: #f8d7da;
-            color: #721c24;
+            background: var(--do-error-bg);
+            color: var(--do-error-text);
             max-width: 100%;
+            border: none;
         }
 
         .typing-indicator {
             display: none;
             padding: 12px 16px;
-            background: white;
-            border-radius: 18px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            background: var(--do-surface);
+            border: 1px solid var(--do-border);
+            border-radius: 8px;
             width: fit-content;
         }
 
         .typing-indicator.active {
-            display: block;
+            display: flex;
+            gap: 4px;
+            align-items: center;
         }
 
         .typing-indicator span {
             display: inline-block;
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
-            background: #999;
-            margin: 0 2px;
-            animation: typing 1.4s infinite;
+            background: var(--do-text-secondary);
+            animation: typing 1s ease-in-out infinite;
         }
 
-        .typing-indicator span:nth-child(2) {
-            animation-delay: 0.2s;
-        }
-
-        .typing-indicator span:nth-child(3) {
-            animation-delay: 0.4s;
-        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
 
         @keyframes typing {
-            0%, 60%, 100% {
-                transform: translateY(0);
-            }
-            30% {
-                transform: translateY(-10px);
-            }
+            0%, 60%, 100% { opacity: 0.4; transform: scale(0.9); }
+            30% { opacity: 1; transform: scale(1); }
         }
 
         .chat-input-container {
-            padding: 20px;
-            background: white;
-            border-top: 1px solid #e5e5e5;
+            padding: 16px 24px 24px;
+            background: var(--do-surface);
+            border-top: 1px solid var(--do-border);
+            flex-shrink: 0;
         }
 
         .chat-input-form {
             display: flex;
-            gap: 10px;
+            gap: 12px;
+            max-width: 720px;
+            margin: 0 auto;
         }
 
         .chat-input {
             flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #e5e5e5;
-            border-radius: 25px;
-            font-size: 1rem;
+            padding: 10px 14px;
+            border: 1px solid var(--do-border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            color: var(--do-text);
+            background: var(--do-surface);
             outline: none;
-            transition: border-color 0.3s;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .chat-input::placeholder {
+            color: var(--do-text-secondary);
+        }
+
+        .chat-input:hover {
+            border-color: #b1bac4;
         }
 
         .chat-input:focus {
-            border-color: #667eea;
+            border-color: var(--do-blue);
+            box-shadow: 0 0 0 3px var(--do-blue-light);
         }
 
         .send-button {
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 10px 20px;
+            background: var(--do-blue);
             color: white;
             border: none;
-            border-radius: 25px;
-            font-size: 1rem;
-            font-weight: 600;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: background 0.15s;
         }
 
         .send-button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            background: var(--do-blue-hover);
         }
 
         .send-button:disabled {
@@ -201,43 +228,46 @@
 
         .suggestions {
             display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
+            gap: 8px;
+            margin-bottom: 16px;
             flex-wrap: wrap;
         }
 
         .suggestion-chip {
-            padding: 8px 16px;
-            background: white;
-            border: 2px solid #667eea;
-            color: #667eea;
-            border-radius: 20px;
-            font-size: 0.9rem;
+            padding: 8px 14px;
+            background: var(--do-surface);
+            border: 1px solid var(--do-border);
+            color: var(--do-text);
+            border-radius: 8px;
+            font-size: 13px;
+            font-family: inherit;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: border-color 0.15s, background 0.15s, color 0.15s;
         }
 
         .suggestion-chip:hover {
-            background: #667eea;
-            color: white;
-            transform: translateY(-2px);
+            border-color: var(--do-blue);
+            color: var(--do-blue);
+            background: var(--do-blue-light);
         }
 
         pre {
-            background: #f4f4f4;
-            padding: 10px;
-            border-radius: 5px;
+            background: var(--do-bg);
+            padding: 12px;
+            border-radius: 6px;
             overflow-x: auto;
             margin: 10px 0;
+            font-size: 13px;
+            border: 1px solid var(--do-border);
         }
 
         code {
-            font-family: 'Courier New', monospace;
-            font-size: 0.9rem;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+            font-size: 13px;
         }
 
         .message-link {
-            color: #667eea;
+            color: var(--do-blue);
             text-decoration: none;
             word-break: break-all;
         }
@@ -248,48 +278,54 @@
     </style>
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-header">
-            <h1>🚀 Static Site Agent</h1>
-            <p>Create, containerize, and deploy static websites</p>
+    <header class="chat-header">
+        <img 
+            class="chat-header-logo" 
+            src="https://upload.wikimedia.org/wikipedia/commons/f/ff/DigitalOcean_logo.svg" 
+            alt="DigitalOcean"
+        >
+        <div class="chat-header-divider" aria-hidden="true"></div>
+        <div>
+            <div class="chat-header-title">Static Site Agent</div>
+            <div class="chat-header-subtitle">Create, edit, and deploy static sites</div>
         </div>
+    </header>
 
-        <div class="chat-messages" id="chatMessages">
-            <div class="message system">
-                <div class="message-content">
-                    Welcome! I can help you generate static websites, containerize them, and deploy to DigitalOcean Spaces. What would you like to create?
-                </div>
-            </div>
-            <div class="suggestions">
-                <div class="suggestion-chip" onclick="sendSuggestion('Create a modern minimalist portfolio site')">
-                    Portfolio Site
-                </div>
-                <div class="suggestion-chip" onclick="sendSuggestion('Generate a colorful landing page for a tech startup')">
-                    Landing Page
-                </div>
-                <div class="suggestion-chip" onclick="sendSuggestion('Build a professional blog with a dark theme')">
-                    Blog Site
-                </div>
-            </div>
-            <div class="typing-indicator" id="typingIndicator">
-                <span></span>
-                <span></span>
-                <span></span>
+    <div class="chat-messages" id="chatMessages">
+        <div class="message system">
+            <div class="message-content">
+                Welcome. I can help you create static websites, containerize them, and deploy to DigitalOcean Spaces. What would you like to do?
             </div>
         </div>
+        <div class="suggestions">
+            <button type="button" class="suggestion-chip" onclick="sendSuggestion('Create a modern minimalist portfolio site')">
+                Portfolio Site
+            </button>
+            <button type="button" class="suggestion-chip" onclick="sendSuggestion('Generate a colorful landing page for a tech startup')">
+                Landing Page
+            </button>
+            <button type="button" class="suggestion-chip" onclick="sendSuggestion('Build a professional blog with a dark theme')">
+                Blog Site
+            </button>
+        </div>
+        <div class="typing-indicator" id="typingIndicator">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </div>
 
-        <div class="chat-input-container">
-            <form class="chat-input-form" id="chatForm">
-                <input 
-                    type="text" 
-                    class="chat-input" 
-                    id="messageInput" 
-                    placeholder="Describe the website you want to create..."
-                    autocomplete="off"
-                >
-                <button type="submit" class="send-button" id="sendButton">Send</button>
-            </form>
-        </div>
+    <div class="chat-input-container">
+        <form class="chat-input-form" id="chatForm">
+            <input 
+                type="text" 
+                class="chat-input" 
+                id="messageInput" 
+                placeholder="Create, edit, or manage static sites—ask anything..."
+                autocomplete="off"
+            >
+            <button type="submit" class="send-button" id="sendButton">Send</button>
+        </form>
     </div>
 
     <script>
@@ -306,13 +342,10 @@
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             
-            // Format the content (basic markdown-like support)
             const formattedContent = formatMessage(content);
             contentDiv.innerHTML = formattedContent;
             
             messageDiv.appendChild(contentDiv);
-            
-            // Insert before typing indicator
             chatMessages.insertBefore(messageDiv, typingIndicator);
             scrollToBottom();
         }
@@ -326,7 +359,6 @@
         }
 
         function formatMessage(text) {
-            // Extract URLs first so we can make them clickable without double-escaping
             const urlRegex = /(https?:\/\/[^\s<>"\']+)/g;
             const urls = [];
             const withPlaceholders = text.replace(urlRegex, (url) => {
@@ -352,25 +384,21 @@
             sendButton.disabled = isLoading;
             messageInput.disabled = isLoading;
             typingIndicator.classList.toggle('active', isLoading);
-            if (isLoading) {
-                scrollToBottom();
-            }
+            if (isLoading) scrollToBottom();
         }
 
         async function sendMessage(message) {
             if (!message.trim()) return;
 
-            // Add user message
             addMessage(message, 'user');
             messageInput.value = '';
+            messageInput.focus();
             setLoading(true);
 
             try {
                 const response = await fetch('/', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         jsonrpc: '2.0',
                         id: Date.now().toString(),
@@ -378,21 +406,15 @@
                         params: {
                             message: {
                                 role: 'user',
-                                parts: [{
-                                    kind: 'text',
-                                    text: message
-                                }]
+                                parts: [{ kind: 'text', text: message }]
                             }
                         }
                     })
                 });
 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
                 const data = await response.json();
-                
                 if (data.result && data.result.artifacts && data.result.artifacts.length > 0) {
                     const responseText = data.result.artifacts[0].parts[0].text;
                     addMessage(responseText, 'agent');
@@ -404,6 +426,7 @@
                 addMessage(`Error: ${error.message}. Please make sure your GRADIENT_API_KEY is set.`, 'error');
             } finally {
                 setLoading(false);
+                messageInput.focus();
             }
         }
 
@@ -414,11 +437,9 @@
 
         chatForm.addEventListener('submit', (e) => {
             e.preventDefault();
-            const message = messageInput.value;
-            sendMessage(message);
+            sendMessage(messageInput.value);
         });
 
-        // Focus input on load
         messageInput.focus();
     </script>
 </body>
