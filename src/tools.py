@@ -2,6 +2,7 @@
 Tools for the Static Site Agent.
 """
 import os
+import re
 import shutil
 import tempfile
 import json
@@ -9,7 +10,7 @@ import subprocess
 import logging
 import time
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel
@@ -68,54 +69,439 @@ class DeleteSpacesBucketResult(BaseModel):
     message: str
 
 
+def _get_site_spec_llm():
+    """Return an LLM instance for generating site specs (uses same env as agent)."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        return None
+    openai_key = os.getenv("OPENAI_API_KEY")
+    do_gradient_key = os.getenv("DO_GRADIENT_API_KEY")
+    if openai_key:
+        return ChatOpenAI(model="gpt-4o-mini", temperature=0.6)
+    if do_gradient_key:
+        return ChatOpenAI(
+            model="llama3.3-70b-instruct",
+            temperature=0.5,
+            api_key=do_gradient_key,
+            base_url="https://inference.do-ai.run/v1",
+        )
+    return None
+
+
+def _extract_json_from_llm_response(text: str) -> Optional[Dict[str, Any]]:
+    """Extract first complete JSON object from LLM output (handles markdown code blocks)."""
+    text = text.strip()
+    # Strip markdown code block if present
+    code_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if code_match:
+        text = code_match.group(1).strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _image_url_for_keyword(keyword: str, width: int = 800, height: int = 500) -> str:
+    """Return a deterministic placeholder image URL from a keyword (Picsum with seed)."""
+    seed = abs(hash(keyword.strip().lower())) % (2**32)
+    return f"https://picsum.photos/seed/{seed}/{width}/{height}"
+
+
+def _generate_site_spec(
+    user_request: str,
+    user_content: Optional[str],
+    site_type: str,
+    style_hints: Optional[str],
+    site_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Use LLM to generate a structured site design spec from the user's request."""
+    llm = _get_site_spec_llm()
+    if not llm:
+        logger.warning("No LLM configured for custom site design; falling back to template")
+        return None
+
+    content_instruction = (
+        "The user provided the following content to include; use it prominently (e.g. hero, about, or key sections):\n"
+        + user_content
+    ) if user_content else "The user did not provide specific text; generate engaging, relevant copy for the concept and site type."
+
+    prompt = f"""You are a web designer. Given the user's request, produce a JSON site design spec. Return ONLY valid JSON, no other text.
+
+User request: {user_request}
+Site type: {site_type}
+Style hints: {style_hints or 'none'}
+Site name: {site_name}
+
+{content_instruction}
+
+Respond with a single JSON object in this exact shape (use it; include 1-4 pages as appropriate for the request):
+{{
+  "title": "Site title for browser tab",
+  "style": {{
+    "primary_color": "#hex (e.g. #2563eb)",
+    "background_color": "#hex",
+    "text_color": "#hex",
+    "card_bg": "#hex",
+    "font_family": "e.g. 'Georgia', serif or system-ui, sans-serif"
+  }},
+  "pages": [
+    {{
+      "path": "index.html",
+      "nav_label": "Home",
+      "sections": [
+        {{
+          "type": "hero",
+          "heading": "string",
+          "text": "string",
+          "image_keyword": "one word e.g. nature, tech, coffee, portrait"
+        }},
+        {{
+          "type": "section",
+          "heading": "string",
+          "text": "string",
+          "image_keyword": "optional"
+        }}
+      ]
+    }},
+    {{
+      "path": "about.html",
+      "nav_label": "About",
+      "sections": [ ... ]
+    }}
+  ]
+}}
+
+Rules:
+- Include at least one page (index.html). Add more pages (about, contact, services, portfolio, blog, etc.) when they fit the request.
+- Every section can have "heading", "text", and optionally "image_keyword" for a relevant image.
+- Use "image_keyword" as a single word or short phrase for placeholder images (e.g. "nature", "office", "food", "design").
+- Style colors must be valid hex. Match the style_hints (e.g. dark theme = dark background, light text).
+- Generate specific, engaging copy; avoid generic "Lorem" or placeholder text unless no content was given."""
+
+    try:
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        spec = _extract_json_from_llm_response(content)
+        if spec and "pages" in spec and spec["pages"]:
+            return spec
+        logger.warning("LLM did not return valid site spec")
+    except Exception as e:
+        logger.warning(f"LLM site spec generation failed: {e}")
+    return None
+
+
+def _render_site_from_spec(spec: Dict[str, Any], site_path: str, site_name: str) -> List[str]:
+    """Render HTML and CSS from a design spec; returns list of files created."""
+    style = spec.get("style", {})
+    primary = style.get("primary_color", "#2563eb")
+    bg = style.get("background_color", "#f8fafc")
+    text_color = style.get("text_color", "#1f2937")
+    card_bg = style.get("card_bg", "#ffffff")
+    font = style.get("font_family", "system-ui, sans-serif")
+    title = spec.get("title", site_name)
+    pages = spec.get("pages", [])
+
+    nav_links = []
+    for p in pages:
+        path = p.get("path", "index.html")
+        label = p.get("nav_label", "Home")
+        nav_links.append((path, label))
+
+    files_created = []
+
+    for page in pages:
+        path = page.get("path", "index.html")
+        nav_label = page.get("nav_label", "Home")
+        sections = page.get("sections", [])
+        # Relative path from this page to root (for correct hrefs from subdirs)
+        path_parts = path.replace("\\", "/").split("/")
+        depth = len(path_parts) - 1 if len(path_parts) > 1 else 0
+        prefix = ("../" * depth) if depth else ""
+
+        nav_html = "\n            ".join(
+            f'<li><a href="{prefix}{p}">{lbl}</a></li>' for p, lbl in nav_links
+        )
+
+        sections_html = []
+        for sec in sections:
+            stype = sec.get("type", "section")
+            heading = sec.get("heading", "")
+            text = sec.get("text", "")
+            img_key = sec.get("image_keyword")
+            if stype == "hero":
+                img_html = ""
+                if img_key:
+                    img_url = _image_url_for_keyword(img_key, 1200, 600)
+                    img_html = f'<img src="{img_url}" alt="{heading}" class="hero-image">'
+                sections_html.append(
+                    f"""        <section class="hero">
+            {img_html}
+            <div class="hero-content">
+                <h2>{heading}</h2>
+                <p>{text}</p>
+            </div>
+        </section>"""
+                )
+            else:
+                img_html = ""
+                if img_key:
+                    img_url = _image_url_for_keyword(img_key, 800, 500)
+                    img_html = f'<img src="{img_url}" alt="{heading}" class="section-image">'
+                sections_html.append(
+                    f"""        <section class="content-section">
+            <h2>{heading}</h2>
+            {img_html}
+            <p>{text}</p>
+        </section>"""
+                )
+
+        page_title = f"{title} - {nav_label}" if nav_label != "Home" else title
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{page_title}</title>
+    <link rel="stylesheet" href="{prefix}styles.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <h1><a href="{prefix}index.html">{title}</a></h1>
+            <ul>
+                {nav_html}
+            </ul>
+        </nav>
+    </header>
+    <main>
+{"".join(sections_html)}
+    </main>
+    <footer>
+        <p>&copy; {datetime.now().year} {site_name}. All rights reserved.</p>
+    </footer>
+</body>
+</html>"""
+        # If path has a subdir (e.g. blog/post1.html), ensure dir exists
+        out_path = os.path.join(site_path, path)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w") as f:
+            f.write(html)
+        files_created.append(path)
+
+    css = f"""* {{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}}
+
+body {{
+    font-family: {font};
+    line-height: 1.6;
+    color: {text_color};
+    background-color: {bg};
+}}
+
+header {{
+    background-color: {card_bg};
+    padding: 1rem 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}}
+
+nav {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 1200px;
+    margin: 0 auto;
+}}
+
+nav h1 {{ font-size: 1.25rem; }}
+nav h1 a {{
+    color: {primary};
+    text-decoration: none;
+}}
+
+nav ul {{
+    display: flex;
+    list-style: none;
+    gap: 2rem;
+}}
+
+nav a {{
+    color: {text_color};
+    text-decoration: none;
+    transition: color 0.3s;
+}}
+
+nav a:hover {{
+    color: {primary};
+}}
+
+main {{
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}}
+
+.hero {{
+    position: relative;
+    text-align: center;
+    padding: 0;
+    margin-bottom: 3rem;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}}
+
+.hero-image {{
+    width: 100%;
+    height: auto;
+    max-height: 500px;
+    object-fit: cover;
+    display: block;
+}}
+
+.hero-content {{
+    padding: 3rem 2rem;
+    position: relative;
+}}
+
+.hero-content h2 {{
+    font-size: 2.5rem;
+    color: {primary};
+    margin-bottom: 1rem;
+}}
+
+.hero-content p {{
+    font-size: 1.2rem;
+    margin-bottom: 1.5rem;
+}}
+
+.content-section {{
+    margin: 3rem 0;
+}}
+
+.content-section h2 {{
+    font-size: 1.75rem;
+    color: {primary};
+    margin-bottom: 1rem;
+}}
+
+.section-image {{
+    width: 100%;
+    max-width: 800px;
+    height: auto;
+    border-radius: 0.5rem;
+    margin: 1rem 0;
+    display: block;
+}}
+
+.content-section p {{
+    margin: 1rem 0;
+}}
+
+footer {{
+    background-color: {card_bg};
+    text-align: center;
+    padding: 2rem;
+    margin-top: 4rem;
+}}
+
+@media (max-width: 768px) {{
+    nav {{ flex-direction: column; gap: 1rem; }}
+    nav ul {{ flex-direction: column; text-align: center; }}
+    .hero-content h2 {{ font-size: 1.75rem; }}
+}}
+"""
+    css_path = os.path.join(site_path, "styles.css")
+    with open(css_path, "w") as f:
+        f.write(css)
+    files_created.append("styles.css")
+    return files_created
+
+
 @tool
-def generate_static_site(site_type: str, style_hints: Optional[str] = None, site_name: Optional[str] = "mysite") -> SiteGenerationResult:
+def generate_static_site(
+    site_type: str,
+    style_hints: Optional[str] = None,
+    site_name: Optional[str] = "mysite",
+    user_request: Optional[str] = None,
+    user_content: Optional[str] = None,
+) -> SiteGenerationResult:
     """
-    Generate a static website based on user requirements.
-    
+    Generate a static website based on user requirements. When user_request is provided,
+    the site is customized on the fly: multi-page, AI-generated copy, and images. If the user
+    did not provide text, relevant copy is generated for the concept and site type.
+
     Args:
-        site_type: Type of site to generate (e.g., "portfolio", "blog", "landing page", "business")
-        style_hints: Optional style preferences (e.g., "modern and minimalist", "colorful and playful", "professional")
+        site_type: Type of site (e.g., "portfolio", "blog", "landing page", "business")
+        style_hints: Optional style preferences (e.g., "modern and minimalist", "colorful and playful")
         site_name: Name for the site directory (default: "mysite")
-    
+        user_request: Optional. The user's full request (e.g. "Create a photographer portfolio with an about and contact page").
+                      When set, generates a customized multi-page site with images and generated or user-provided text.
+        user_content: Optional. Text the user provided to include on the site; used when user_request is set.
+
     Returns:
         SiteGenerationResult with success status, path, and details
     """
     logger.info(f"Generating {site_type} site with name '{site_name}'")
     logger.info(f"Style hints: {style_hints or 'None'}")
-    
+    if user_request:
+        logger.info(f"Custom design request: {user_request[:200]}...")
+    if user_content:
+        logger.info(f"User content provided: {user_content[:200]}...")
+
     try:
-        # Create a temporary directory for the site
         tmp_dir = tempfile.mkdtemp(prefix=f"static-site-{site_name}-")
         site_path = os.path.join(tmp_dir, site_name)
         os.makedirs(site_path, exist_ok=True)
-        
-        # Generate HTML content based on site type and style
-        html_content = _generate_html_content(site_type, style_hints, site_name)
-        css_content = _generate_css_content(site_type, style_hints)
-        
-        # Create files
         files_created = []
-        
-        # Create index.html
-        index_path = os.path.join(site_path, "index.html")
-        with open(index_path, "w") as f:
-            f.write(html_content)
-        files_created.append("index.html")
-        
-        # Create styles.css
-        css_path = os.path.join(site_path, "styles.css")
-        with open(css_path, "w") as f:
-            f.write(css_content)
-        files_created.append("styles.css")
-        
-        # Create nginx config for serving
+
+        if user_request:
+            spec = _generate_site_spec(user_request, user_content, site_type, style_hints, site_name)
+            if spec:
+                files_created = _render_site_from_spec(spec, site_path, site_name)
+            else:
+                logger.info("Falling back to template-based generation")
+                html_content = _generate_html_content(site_type, style_hints, site_name)
+                css_content = _generate_css_content(site_type, style_hints)
+                index_path = os.path.join(site_path, "index.html")
+                with open(index_path, "w") as f:
+                    f.write(html_content)
+                files_created.append("index.html")
+                css_path = os.path.join(site_path, "styles.css")
+                with open(css_path, "w") as f:
+                    f.write(css_content)
+                files_created.append("styles.css")
+        else:
+            html_content = _generate_html_content(site_type, style_hints, site_name)
+            css_content = _generate_css_content(site_type, style_hints)
+            index_path = os.path.join(site_path, "index.html")
+            with open(index_path, "w") as f:
+                f.write(html_content)
+            files_created.append("index.html")
+            css_path = os.path.join(site_path, "styles.css")
+            with open(css_path, "w") as f:
+                f.write(css_content)
+            files_created.append("styles.css")
+
         nginx_config = """server {
     listen 80;
     server_name localhost;
     root /usr/share/nginx/html;
     index index.html;
-    
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -125,23 +511,23 @@ def generate_static_site(site_type: str, style_hints: Optional[str] = None, site
         with open(nginx_path, "w") as f:
             f.write(nginx_config)
         files_created.append("nginx.conf")
-        
+
         logger.info(f"✓ Successfully generated site at: {site_path}")
         logger.info(f"✓ Files created: {', '.join(files_created)}")
-        
+
         return SiteGenerationResult(
             success=True,
             site_path=site_path,
             message=f"Successfully generated {site_type} site at {site_path}",
-            files_created=files_created
+            files_created=files_created,
         )
-        
+
     except Exception as e:
         return SiteGenerationResult(
             success=False,
             site_path="",
             message=f"Error generating site: {str(e)}",
-            files_created=[]
+            files_created=[],
         )
 
 

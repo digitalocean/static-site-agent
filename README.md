@@ -7,6 +7,9 @@ An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deplo
 ## Features
 
 - **AI-Powered Site Generation**: Generate static websites based on natural language descriptions
+- **Customized Designs on the Fly**: When you describe what you want, the agent creates a tailored multi-page site with relevant copy and images (no fixed template)
+- **Images & Copy**: Sites include placeholder images keyed to your concept; if you don’t provide text, the AI generates relevant copy for the site type and concept
+- **Multiple Pages**: Sites can have several pages (e.g. Home, About, Contact, Services); the generator chooses structure from your request
 - **Multiple Site Types**: Supports portfolio, landing page, blog, and business sites
 - **Style Customization**: Apply style hints like "modern and minimalist", "colorful and playful", or "professional"
 - **Automatic Containerization**: Creates Docker containers for your generated sites
@@ -121,7 +124,12 @@ Generate a colorful and playful landing page for a kids' app with a signup form
 Build a professional blog site with a dark theme
 ```
 
-### Example 4: Deploy to Spaces (saves site to your Space)
+### Example 4: Custom Multi-Page Site with Images
+```
+Create a photographer portfolio with a home page, about page, and contact page. Use a dark, elegant style.
+```
+
+### Example 5: Deploy to Spaces (saves site to your Space)
 ```
 Create a landing page and upload it to my DigitalOcean Space named my-website in nyc3
 ```
@@ -131,8 +139,9 @@ Create a landing page and upload it to my DigitalOcean Space named my-website in
 The agent uses three main tools:
 
 1. **generate_static_site**: Creates HTML/CSS files in a temporary directory
-   - Parameters: `site_type`, `style_hints`, `site_name`
-   - Outputs: Static site files (index.html, styles.css, nginx.conf)
+   - Parameters: `site_type`, `style_hints`, `site_name`, optional `user_request`, optional `user_content`
+   - When `user_request` is provided, the site is customized: multiple pages, images (via placeholders), and AI-generated or user-provided text
+   - Outputs: Static site files (e.g. index.html, about.html, styles.css, nginx.conf)
 
 2. **containerize_site**: Creates a Docker image for the site
    - Parameters: `site_path`, `image_name`

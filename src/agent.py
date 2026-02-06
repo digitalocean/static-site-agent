@@ -140,7 +140,7 @@ FINAL_ANSWER
 Then on the next line(s), your final reply to the user.
 
 Available tools:
-1. generate_static_site - Args: site_type (e.g. "portfolio", "landing page", "blog", "business"), style_hints (optional string), site_name (optional, default "mysite"). Returns site_path.
+1. generate_static_site - Args: site_type (e.g. "portfolio", "landing page", "blog", "business"), style_hints (optional), site_name (optional), user_request (optional), user_content (optional). When user_request is set, the site is customized: multi-page, images, and AI-generated or user-provided text. Always pass the user's full request as user_request so the design matches what they asked for. If they provided specific text to include, pass it as user_content. Returns site_path.
 2. containerize_site - Args: site_path (from generate_static_site), image_name (optional).
 3. deploy_to_spaces - Args: site_path, bucket_name (3-63 chars, lowercase/dashes), region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional), make_public (default true), create_bucket_if_missing (default true). Uploads the site to DigitalOcean Spaces.
 4. list_spaces_buckets - Args: region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional). Lists all Spaces buckets (sites) in the account.
@@ -150,7 +150,7 @@ Available tools:
 8. write_file - Args: file_path, content. Writes content to a file. Use only for paths under temp dir. After editing, call deploy_to_spaces to save back.
 
 Rules:
-- When the user asks for a site, immediately output a TOOL_CALL for generate_static_site. Use the returned site_path in later steps.
+- When the user asks for a site, output a TOOL_CALL for generate_static_site. Always pass the user's full message as user_request so the site is customized (multi-page, images, relevant or user text). Use the returned site_path in later steps.
 - When the user wants to list their sites, call list_spaces_buckets. In your reply, include the full URL for each site (from the tool result) so the user can click to open the site in a new window.
 - When the user wants to EDIT an existing site: (1) call list_spaces_buckets if they need to pick a site, (2) call download_site_from_spaces(bucket_name) to get site_path, (3) call read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) call write_file with the modified content, (5) call deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
 - When the user wants to DELETE a site, call delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
@@ -163,7 +163,7 @@ Rules:
             prompt = ChatPromptTemplate.from_messages([
                 ("system", f"""You are a Static Site Generation and Deployment Agent with access to these tools:
 
-1. generate_static_site(site_type, style_hints, site_name) - Creates actual HTML/CSS files
+1. generate_static_site(site_type, style_hints, site_name, user_request, user_content) - Creates HTML/CSS files. Pass the user's full request as user_request for customized multi-page sites with images and generated or user text; optional user_content for text they provided to include.
 2. containerize_site(site_path, image_name) - Creates Docker containers
 3. deploy_to_spaces(site_path, bucket_name, region, ...) - Uploads the static site to the user's DigitalOcean Space. Creates the bucket if missing. Use to save a new or edited site.
 4. list_spaces_buckets(region) - Lists all Spaces buckets (sites) in the account. Use when the user wants to see their sites or pick one to edit.
