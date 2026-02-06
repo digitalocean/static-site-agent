@@ -235,6 +235,16 @@
             font-family: 'Courier New', monospace;
             font-size: 0.9rem;
         }
+
+        .message-link {
+            color: #667eea;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .message-link:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -307,11 +317,31 @@
             scrollToBottom();
         }
 
-        function formatMessage(text) {
-            // Simple formatting
+        function escapeHtml(text) {
             return text
-                .replace(/\n/g, '<br>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>');
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function formatMessage(text) {
+            // Extract URLs first so we can make them clickable without double-escaping
+            const urlRegex = /(https?:\/\/[^\s<>"\']+)/g;
+            const urls = [];
+            const withPlaceholders = text.replace(urlRegex, (url) => {
+                urls.push(url);
+                return '\u0001URL' + (urls.length - 1) + '\u0001';
+            });
+            const escaped = escapeHtml(withPlaceholders);
+            const withBreaks = escaped.replace(/\n/g, '<br>');
+            const withCode = withBreaks.replace(/`([^`]+)`/g, '<code>$1</code>');
+            const withLinks = withCode.replace(/\u0001URL(\d+)\u0001/g, (_, i) => {
+                const url = urls[parseInt(i, 10)];
+                const safeHref = escapeHtml(url).replace(/"/g, '&quot;');
+                return '<a href="' + safeHref + '" target="_blank" rel="noopener noreferrer" class="message-link">' + escapeHtml(url) + '</a>';
+            });
+            return withLinks;
         }
 
         function scrollToBottom() {

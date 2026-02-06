@@ -7,6 +7,7 @@ import tempfile
 import json
 import subprocess
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -40,6 +41,30 @@ class SpacesDeploymentResult(BaseModel):
     region: Optional[str] = None
     index_url: Optional[str] = None
     cdn_url: Optional[str] = None
+    message: str
+
+
+class ListSpacesBucketsResult(BaseModel):
+    """Result of listing DigitalOcean Spaces buckets"""
+    success: bool
+    buckets: list[str] = []
+    region: Optional[str] = None
+    message: str
+
+
+class DownloadSiteFromSpacesResult(BaseModel):
+    """Result of downloading a site from a Space to local disk"""
+    success: bool
+    site_path: str
+    bucket: Optional[str] = None
+    files_downloaded: list[str] = []
+    message: str
+
+
+class DeleteSpacesBucketResult(BaseModel):
+    """Result of deleting a DigitalOcean Spaces bucket (site)"""
+    success: bool
+    bucket: Optional[str] = None
     message: str
 
 
@@ -251,6 +276,50 @@ def _spaces_bucket_exists(client, bucket_name: str) -> bool:
         raise
 
 
+def _spaces_retry(fn, *args, max_attempts: int = 3, **kwargs):
+    """Call fn(*args, **kwargs) with retries on 403/503/500 (rate limit or transient errors)."""
+    from botocore.exceptions import ClientError
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except ClientError as e:
+            last_err = e
+            code = e.response.get("Error", {}).get("Code", "")
+            status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in ("AccessDenied", "403") or status in (403, 500, 503):
+                if attempt < max_attempts - 1:
+                    delay = (attempt + 1) * 2
+                    logger.warning(f"Spaces request failed ({code or status}), retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    raise
+            else:
+                raise
+    if last_err:
+        raise last_err
+
+
+def _spaces_set_bucket_public_policy(client, bucket_name: str) -> bool:
+    """Set a bucket policy so all objects are publicly readable. Returns True if set."""
+    try:
+        policy = json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": f"arn:aws:s3:::{bucket_name}/*"
+            }]
+        })
+        client.put_bucket_policy(Bucket=bucket_name, Policy=policy)
+        logger.info(f"✓ Set bucket policy for public read on {bucket_name}")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not set bucket policy: {e}")
+        return False
+
+
 @tool
 def deploy_to_spaces(
     site_path: str,
@@ -320,11 +389,11 @@ def deploy_to_spaces(
             config=Config(signature_version="s3v4"),
         )
 
-        # Create bucket if it doesn't exist and we're allowed to
+        # Create bucket if it doesn't exist and we're allowed to (with retry for rate limits)
         if not _spaces_bucket_exists(client, bucket_name):
             if create_bucket_if_missing:
                 try:
-                    client.create_bucket(Bucket=bucket_name)
+                    _spaces_retry(lambda: client.create_bucket(Bucket=bucket_name))
                     logger.info(f"✓ Created Space (bucket) '{bucket_name}' in {region}")
                 except ClientError as e:
                     code = e.response.get("Error", {}).get("Code", "")
@@ -357,8 +426,8 @@ def deploy_to_spaces(
                     message=f"Bucket '{bucket_name}' does not exist. Create it in the DigitalOcean control panel (Spaces), or set create_bucket_if_missing=True to create it via the API."
                 )
 
-        # Collect and upload only static web files
-        uploaded = []
+        # Collect and upload only static web files (retry on rate limit; fallback to no-ACL + bucket policy if AccessDenied)
+        files_to_upload = []
         site_path_abs = os.path.abspath(site_path)
         for root, _dirs, files in os.walk(site_path_abs):
             for name in files:
@@ -370,12 +439,37 @@ def deploy_to_spaces(
                     continue
                 key = rel.replace("\\", "/")
                 content_type = _SPACES_CONTENT_TYPES.get(ext, "application/octet-stream")
-                extra = {"ContentType": content_type}
-                if make_public:
-                    extra["ACL"] = "public-read"
-                client.upload_file(path, bucket_name, key, ExtraArgs=extra)
+                files_to_upload.append((path, key, content_type))
+
+        uploaded = []
+        use_acl = make_public
+        for path, key, content_type in files_to_upload:
+            extra = {"ContentType": content_type}
+            if use_acl:
+                extra["ACL"] = "public-read"
+            try:
+                _spaces_retry(
+                    lambda p=path, k=key, e=extra: client.upload_file(p, bucket_name, k, ExtraArgs=e)
+                )
                 uploaded.append(key)
                 logger.info(f"  Uploaded: {key}")
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                if code == "AccessDenied" and use_acl:
+                    # Some Spaces buckets disallow object ACLs; upload without ACL and use bucket policy
+                    logger.warning("Upload with ACL failed (AccessDenied), retrying without ACL...")
+                    use_acl = False
+                    extra_no_acl = {"ContentType": content_type}
+                    _spaces_retry(
+                        lambda p=path, k=key, e=extra_no_acl: client.upload_file(p, bucket_name, k, ExtraArgs=e)
+                    )
+                    uploaded.append(key)
+                    logger.info(f"  Uploaded: {key} (no ACL)")
+                else:
+                    raise
+
+        if make_public and not use_acl and uploaded:
+            _spaces_set_bucket_public_policy(client, bucket_name)
 
         if not uploaded:
             return SpacesDeploymentResult(
@@ -416,6 +510,329 @@ Note: Spaces does not support default index documents. Use the index URL above, 
             region=region,
             message=f"Failed to deploy to Spaces: {str(e)}"
         )
+
+
+@tool
+def list_spaces_buckets(
+    region: str = "nyc3",
+    spaces_access_key: Optional[str] = None,
+    spaces_secret_key: Optional[str] = None,
+) -> ListSpacesBucketsResult:
+    """
+    List all DigitalOcean Spaces buckets (static sites) in this account.
+    Use this when the user wants to see their existing sites or pick a site to edit.
+
+    Args:
+        region: Spaces region used for the API (e.g. nyc3, sfo3, ams3). Default nyc3.
+        spaces_access_key: Optional; uses SPACES_ACCESS_KEY_ID or SPACES_KEY env if not set.
+        spaces_secret_key: Optional; uses SPACES_SECRET_ACCESS_KEY or SPACES_SECRET env if not set.
+
+    Returns:
+        ListSpacesBucketsResult with list of bucket names and region.
+    """
+    logger.info(f"Listing Spaces buckets in region {region}")
+    try:
+        if not spaces_access_key:
+            spaces_access_key = os.getenv("SPACES_ACCESS_KEY_ID") or os.getenv("SPACES_KEY")
+        if not spaces_secret_key:
+            spaces_secret_key = os.getenv("SPACES_SECRET_ACCESS_KEY") or os.getenv("SPACES_SECRET")
+        if not spaces_access_key or not spaces_secret_key:
+            return ListSpacesBucketsResult(
+                success=False,
+                message="Spaces credentials required. Set SPACES_ACCESS_KEY_ID and SPACES_SECRET_ACCESS_KEY (or SPACES_KEY / SPACES_SECRET).",
+            )
+        try:
+            import boto3
+            from botocore.config import Config
+        except ImportError:
+            return ListSpacesBucketsResult(
+                success=False,
+                message="boto3 is required. Install with: pip install boto3",
+            )
+        endpoint_url = f"https://{region}.digitaloceanspaces.com"
+        client = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=spaces_access_key,
+            aws_secret_access_key=spaces_secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+        response = _spaces_retry(client.list_buckets)
+        buckets = [b["Name"] for b in response.get("Buckets", [])]
+        logger.info(f"✓ Found {len(buckets)} bucket(s): {buckets}")
+        # Include view URL for each bucket so the chat UI can show clickable links
+        base_urls = [
+            f"https://{name}.{region}.digitaloceanspaces.com/index.html"
+            for name in buckets
+        ]
+        lines = [f"{name}: {url}" for name, url in zip(buckets, base_urls)] if buckets else ["none"]
+        message = "Found {} Space(s):\n".format(len(buckets)) + "\n".join(lines)
+        return ListSpacesBucketsResult(
+            success=True,
+            buckets=buckets,
+            region=region,
+            message=message,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list Spaces buckets: {e}", exc_info=True)
+        return ListSpacesBucketsResult(
+            success=False,
+            message=f"Failed to list buckets: {str(e)}",
+        )
+
+
+@tool
+def download_site_from_spaces(
+    bucket_name: str,
+    region: str = "nyc3",
+    spaces_access_key: Optional[str] = None,
+    spaces_secret_key: Optional[str] = None,
+) -> DownloadSiteFromSpacesResult:
+    """
+    Download a static site from a DigitalOcean Space (bucket) to a local directory
+    so it can be edited. Use this when the user wants to edit an existing site:
+    first list sites with list_spaces_buckets, then download the chosen bucket with
+    this tool, then use read_file/write_file to edit, then deploy_to_spaces to save back.
+
+    Args:
+        bucket_name: Name of the Space (bucket) to download from.
+        region: Spaces region (e.g. nyc3, sfo3, ams3). Default nyc3.
+        spaces_access_key: Optional; uses env if not set.
+        spaces_secret_key: Optional; uses env if not set.
+
+    Returns:
+        DownloadSiteFromSpacesResult with site_path (use this path for read_file, write_file, and deploy_to_spaces).
+    """
+    logger.info(f"Downloading site from Space '{bucket_name}' in {region}")
+    try:
+        if not spaces_access_key:
+            spaces_access_key = os.getenv("SPACES_ACCESS_KEY_ID") or os.getenv("SPACES_KEY")
+        if not spaces_secret_key:
+            spaces_secret_key = os.getenv("SPACES_SECRET_ACCESS_KEY") or os.getenv("SPACES_SECRET")
+        if not spaces_access_key or not spaces_secret_key:
+            return DownloadSiteFromSpacesResult(
+                success=False,
+                site_path="",
+                message="Spaces credentials required.",
+            )
+        try:
+            import boto3
+            from botocore.config import Config
+            from botocore.exceptions import ClientError
+        except ImportError:
+            return DownloadSiteFromSpacesResult(
+                success=False,
+                site_path="",
+                message="boto3 is required. Install with: pip install boto3",
+            )
+        endpoint_url = f"https://{region}.digitaloceanspaces.com"
+        client = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=spaces_access_key,
+            aws_secret_access_key=spaces_secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+        if not _spaces_bucket_exists(client, bucket_name):
+            return DownloadSiteFromSpacesResult(
+                success=False,
+                site_path="",
+                bucket=bucket_name,
+                message=f"Bucket '{bucket_name}' does not exist or is not accessible.",
+            )
+        tmp_dir = tempfile.mkdtemp(prefix=f"spaces-download-{bucket_name}-")
+        downloaded = []
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket_name):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                local_path = os.path.join(tmp_dir, key)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                _spaces_retry(client.download_file, bucket_name, key, local_path)
+                downloaded.append(key)
+        if not downloaded:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return DownloadSiteFromSpacesResult(
+                success=False,
+                site_path="",
+                bucket=bucket_name,
+                message=f"Bucket '{bucket_name}' is empty; no files to download.",
+            )
+        logger.info(f"✓ Downloaded {len(downloaded)} file(s) to {tmp_dir}")
+        return DownloadSiteFromSpacesResult(
+            success=True,
+            site_path=tmp_dir,
+            bucket=bucket_name,
+            files_downloaded=downloaded,
+            message=f"Downloaded {len(downloaded)} file(s) to {tmp_dir}. Use this path for read_file, write_file, and deploy_to_spaces.",
+        )
+    except Exception as e:
+        logger.error(f"Failed to download from Spaces: {e}", exc_info=True)
+        return DownloadSiteFromSpacesResult(
+            success=False,
+            site_path="",
+            bucket=bucket_name,
+            message=f"Failed to download: {str(e)}",
+        )
+
+
+@tool
+def delete_site_from_spaces(
+    bucket_name: str,
+    region: str = "nyc3",
+    spaces_access_key: Optional[str] = None,
+    spaces_secret_key: Optional[str] = None,
+) -> DeleteSpacesBucketResult:
+    """
+    Permanently delete a static site (DigitalOcean Space/bucket) by name.
+    This removes all objects in the bucket and then deletes the bucket. Use when the user
+    asks to delete or remove a site. Confirm the bucket name with list_spaces_buckets if needed.
+
+    Args:
+        bucket_name: Name of the Space (bucket) to delete.
+        region: Spaces region (e.g. nyc3, sfo3, ams3). Default nyc3.
+        spaces_access_key: Optional; uses env if not set.
+        spaces_secret_key: Optional; uses env if not set.
+
+    Returns:
+        DeleteSpacesBucketResult with success status and message.
+    """
+    logger.info(f"Deleting Space (bucket) '{bucket_name}' in {region}")
+    try:
+        if not spaces_access_key:
+            spaces_access_key = os.getenv("SPACES_ACCESS_KEY_ID") or os.getenv("SPACES_KEY")
+        if not spaces_secret_key:
+            spaces_secret_key = os.getenv("SPACES_SECRET_ACCESS_KEY") or os.getenv("SPACES_SECRET")
+        if not spaces_access_key or not spaces_secret_key:
+            return DeleteSpacesBucketResult(
+                success=False,
+                bucket=bucket_name,
+                message="Spaces credentials required.",
+            )
+        try:
+            import boto3
+            from botocore.config import Config
+            from botocore.exceptions import ClientError
+        except ImportError:
+            return DeleteSpacesBucketResult(
+                success=False,
+                bucket=bucket_name,
+                message="boto3 is required. Install with: pip install boto3",
+            )
+        endpoint_url = f"https://{region}.digitaloceanspaces.com"
+        client = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=spaces_access_key,
+            aws_secret_access_key=spaces_secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+        if not _spaces_bucket_exists(client, bucket_name):
+            return DeleteSpacesBucketResult(
+                success=False,
+                bucket=bucket_name,
+                message=f"Bucket '{bucket_name}' does not exist or is not accessible.",
+            )
+        # Delete all objects (Spaces/S3 require empty bucket before delete_bucket)
+        paginator = client.get_paginator("list_objects_v2")
+        deleted_count = 0
+        for page in paginator.paginate(Bucket=bucket_name):
+            contents = page.get("Contents", [])
+            if not contents:
+                continue
+            keys = [{"Key": obj["Key"]} for obj in contents]
+            _spaces_retry(client.delete_objects, Bucket=bucket_name, Delete={"Objects": keys})
+            deleted_count += len(keys)
+        # Delete the bucket
+        _spaces_retry(client.delete_bucket, Bucket=bucket_name)
+        logger.info(f"✓ Deleted bucket '{bucket_name}' ({deleted_count} object(s) removed)")
+        return DeleteSpacesBucketResult(
+            success=True,
+            bucket=bucket_name,
+            message=f"Successfully deleted site (bucket) '{bucket_name}' and removed {deleted_count} file(s).",
+        )
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        msg = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(f"Failed to delete bucket: {e}", exc_info=True)
+        return DeleteSpacesBucketResult(
+            success=False,
+            bucket=bucket_name,
+            message=f"Failed to delete bucket: {code or msg}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete bucket: {e}", exc_info=True)
+        return DeleteSpacesBucketResult(
+            success=False,
+            bucket=bucket_name,
+            message=f"Failed to delete bucket: {str(e)}",
+        )
+
+
+def _resolve_site_path(path: str) -> Optional[str]:
+    """Resolve path to a real path; allow only under temp dir for safety."""
+    try:
+        real = os.path.realpath(os.path.abspath(path))
+        tmp = os.path.realpath(tempfile.gettempdir())
+        if real == tmp or real.startswith(tmp + os.sep):
+            return real
+    except Exception:
+        pass
+    return None
+
+
+@tool
+def read_file(file_path: str) -> str:
+    """
+    Read the contents of a file. Use for editing a site: after download_site_from_spaces,
+    read index.html or styles.css with this tool, then modify and write back with write_file.
+    Only files under the system temp directory (e.g. downloaded or generated sites) can be read.
+
+    Args:
+        file_path: Full path to the file (e.g. site_path + '/index.html' from download_site_from_spaces).
+
+    Returns:
+        File contents as a string, or an error message.
+    """
+    try:
+        resolved = _resolve_site_path(file_path)
+        if not resolved or not os.path.isfile(resolved):
+            return f"Error: path not allowed or not a file: {file_path}"
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
+
+
+@tool
+def write_file(file_path: str, content: str) -> str:
+    """
+    Write content to a file. Use after editing: write the modified HTML or CSS back,
+    then call deploy_to_spaces(site_path, bucket_name) to save the site back to the bucket.
+    Only paths under the system temp directory (downloaded or generated sites) can be written.
+
+    Args:
+        file_path: Full path to the file (e.g. site_path + '/index.html').
+        content: New file content (string).
+
+    Returns:
+        Success or error message.
+    """
+    try:
+        resolved = _resolve_site_path(file_path)
+        if not resolved:
+            return f"Error: path not allowed: {file_path}"
+        os.makedirs(os.path.dirname(resolved), exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Successfully wrote {resolved}"
+    except Exception as e:
+        return f"Error writing file: {str(e)}"
 
 
 def _generate_html_content(site_type: str, style_hints: Optional[str], site_name: str) -> str:

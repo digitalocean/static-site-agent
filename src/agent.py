@@ -14,7 +14,16 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.callbacks.base import BaseCallbackHandler
 
-from tools import generate_static_site, containerize_site, deploy_to_spaces
+from tools import (
+    generate_static_site,
+    containerize_site,
+    deploy_to_spaces,
+    list_spaces_buckets,
+    download_site_from_spaces,
+    delete_site_from_spaces,
+    read_file,
+    write_file,
+)
 
 # Setup logger
 logger = logging.getLogger("static-site-agent")
@@ -84,7 +93,16 @@ class Agent:
         self.chat_history = []
         
         # 1. Define Tools
-        self.tools = [generate_static_site, containerize_site, deploy_to_spaces]
+        self.tools = [
+            generate_static_site,
+            containerize_site,
+            deploy_to_spaces,
+            list_spaces_buckets,
+            download_site_from_spaces,
+            delete_site_from_spaces,
+            read_file,
+            write_file,
+        ]
         
         # 2. Setup LLM
         # Check which API key is available
@@ -125,9 +143,17 @@ Available tools:
 1. generate_static_site - Args: site_type (e.g. "portfolio", "landing page", "blog", "business"), style_hints (optional string), site_name (optional, default "mysite"). Returns site_path.
 2. containerize_site - Args: site_path (from generate_static_site), image_name (optional).
 3. deploy_to_spaces - Args: site_path, bucket_name (3-63 chars, lowercase/dashes), region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional), make_public (default true), create_bucket_if_missing (default true). Uploads the site to DigitalOcean Spaces.
+4. list_spaces_buckets - Args: region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional). Lists all Spaces buckets (sites) in the account.
+5. download_site_from_spaces - Args: bucket_name, region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional). Downloads a site from a Space to a local path for editing. Returns site_path.
+6. delete_site_from_spaces - Args: bucket_name, region (default "nyc3"), spaces_access_key (optional), spaces_secret_key (optional). Permanently deletes a Space (site) by name. Use when the user asks to delete or remove a site.
+7. read_file - Args: file_path (full path, e.g. site_path + "/index.html"). Reads file contents. Use only for paths under temp dir (downloaded or generated sites).
+8. write_file - Args: file_path, content. Writes content to a file. Use only for paths under temp dir. After editing, call deploy_to_spaces to save back.
 
 Rules:
 - When the user asks for a site, immediately output a TOOL_CALL for generate_static_site. Use the returned site_path in later steps.
+- When the user wants to list their sites, call list_spaces_buckets. In your reply, include the full URL for each site (from the tool result) so the user can click to open the site in a new window.
+- When the user wants to EDIT an existing site: (1) call list_spaces_buckets if they need to pick a site, (2) call download_site_from_spaces(bucket_name) to get site_path, (3) call read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) call write_file with the modified content, (5) call deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
+- When the user wants to DELETE a site, call delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
 - When the user wants to deploy to Spaces, output TOOL_CALL for deploy_to_spaces with site_path (from a previous result) and bucket_name. {spaces_info}
 - Output only TOOL_CALL + JSON or FINAL_ANSWER + text. No other commentary before or after."""
             self.agent_executor = None
@@ -139,11 +165,19 @@ Rules:
 
 1. generate_static_site(site_type, style_hints, site_name) - Creates actual HTML/CSS files
 2. containerize_site(site_path, image_name) - Creates Docker containers
-3. deploy_to_spaces(site_path, bucket_name, region, spaces_access_key, spaces_secret_key, make_public, create_bucket_if_missing) - Uploads the static site files to the user's DigitalOcean Space. If the bucket does not exist, it is created automatically (create_bucket_if_missing=True by default). Use when the user wants to save or deploy the site to Spaces. User provides bucket name (3-63 chars, lowercase/numbers/dashes) and optionally region (default nyc3).
+3. deploy_to_spaces(site_path, bucket_name, region, ...) - Uploads the static site to the user's DigitalOcean Space. Creates the bucket if missing. Use to save a new or edited site.
+4. list_spaces_buckets(region) - Lists all Spaces buckets (sites) in the account. Use when the user wants to see their sites or pick one to edit.
+5. download_site_from_spaces(bucket_name, region) - Downloads a site from a Space to a local path. Returns site_path. Use when the user wants to edit an existing site.
+6. delete_site_from_spaces(bucket_name, region) - Permanently deletes a site (Space/bucket) by name. Use when the user asks to delete or remove a site.
+7. read_file(file_path) - Reads a file. file_path must be a full path (e.g. site_path + "/index.html" or site_path + "/styles.css"). Only works for paths under the temp directory (downloaded or generated sites).
+8. write_file(file_path, content) - Writes content to a file. After editing files, call deploy_to_spaces(site_path, bucket_name) to save the site back to the bucket.
 
 CRITICAL INSTRUCTIONS:
 - When user asks for a site, IMMEDIATELY call generate_static_site - don't just talk about it!
-- When user wants to deploy to Spaces (or "save to Spaces", "put on my Space", "upload to DigitalOcean Spaces"), use deploy_to_spaces(site_path, bucket_name, ...) - this uploads the files and creates the bucket if it doesn't exist. You need site_path from generate_static_site and a bucket_name (ask if not provided).
+- When user wants to LIST their sites, call list_spaces_buckets. In your reply, include the full URL for each site (from the tool result) so the user can click to open the site in a new window.
+- When user wants to EDIT an existing site: (1) list_spaces_buckets if needed to identify the bucket, (2) download_site_from_spaces(bucket_name) to get site_path, (3) read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) write_file with your changes, (5) deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
+- When user wants to DELETE a site, use delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
+- When user wants to deploy or save to Spaces, use deploy_to_spaces(site_path, bucket_name, ...). You need site_path (from generate_static_site or download_site_from_spaces) and bucket_name (ask if not provided).
 - After each tool completes, tell the user what happened based on the tool's output.
 - {spaces_info}
 

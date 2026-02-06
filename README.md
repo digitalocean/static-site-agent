@@ -11,6 +11,8 @@ An A2A (Agent-to-Agent) compliant agent that generates, containerizes, and deplo
 - **Style Customization**: Apply style hints like "modern and minimalist", "colorful and playful", or "professional"
 - **Automatic Containerization**: Creates Docker containers for your generated sites
 - **DigitalOcean Spaces Deployment**: Uploads the generated site directly to your DigitalOcean Space (creates the bucket if needed and saves the site so it can be served publicly)
+- **List Existing Sites**: List all Spaces buckets (sites) in your account
+- **Edit Existing Sites**: Download a site from a Space, edit it (e.g. change copy or styles), and save it back to the same bucket
 
 ## Quick Deploy
 
