@@ -69,6 +69,19 @@ class DeleteSpacesBucketResult(BaseModel):
     message: str
 
 
+class ReferenceDesignResult(BaseModel):
+    """Result of analyzing a reference website's visual design"""
+    success: bool
+    url: str
+    message: str
+    colors: dict = {}       # {primary, secondary, background, text, accent}
+    fonts: dict = {}        # {heading_font, body_font}
+    layout: dict = {}       # {style, sections, has_hero, has_cards, columns, ...}
+    mood: str = ""          # LLM-generated description of visual style
+    image_style: str = ""   # e.g. "photography", "illustrations", "abstract"
+    screenshot_path: Optional[str] = None
+
+
 def _get_site_spec_llm():
     """Return an LLM instance for generating site specs (uses same env as agent)."""
     try:
@@ -125,8 +138,13 @@ def _generate_site_spec(
     site_type: str,
     style_hints: Optional[str],
     site_name: str,
+    reference_design: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Use LLM to generate a structured site design spec from the user's request."""
+    """Use LLM to generate a structured site design spec from the user's request.
+
+    When reference_design is provided (from analyze_reference_site), the prompt
+    instructs the LLM to match the reference site's colors, fonts, layout, and mood.
+    """
     llm = _get_site_spec_llm()
     if not llm:
         logger.warning("No LLM configured for custom site design; falling back to template")
@@ -137,6 +155,40 @@ def _generate_site_spec(
         + user_content
     ) if user_content else "The user did not provide specific text; generate engaging, relevant copy for the concept and site type."
 
+    # Build reference design instruction if available
+    reference_instruction = ""
+    if reference_design:
+        ref_colors = reference_design.get("colors", {})
+        ref_fonts = reference_design.get("fonts", {})
+        ref_layout = reference_design.get("layout", {})
+        ref_mood = reference_design.get("mood", "")
+        ref_image_style = reference_design.get("image_style", "")
+        reference_instruction = f"""
+IMPORTANT: The user wants this site to look similar to an existing website ({reference_design.get('url', 'reference site')}).
+Use these extracted design characteristics closely:
+
+Color palette (use these exact hex colors):
+- Primary: {ref_colors.get('primary', '#2563eb')}
+- Secondary: {ref_colors.get('secondary', '#64748b')}
+- Background: {ref_colors.get('background', '#ffffff')}
+- Text: {ref_colors.get('text', '#1f2937')}
+- Accent: {ref_colors.get('accent', '#2563eb')}
+
+Typography (use these fonts or visually similar free Google Fonts):
+- Heading font: {ref_fonts.get('heading_font', 'system-ui, sans-serif')}
+- Body font: {ref_fonts.get('body_font', 'system-ui, sans-serif')}
+
+Layout style: {json.dumps(ref_layout) if ref_layout else 'not specified'}
+Visual mood: {ref_mood or 'not specified'}
+Image style: {ref_image_style or 'not specified'}
+Border radius: {ref_layout.get('border_radius', 'slightly_rounded')}
+Spacing: {ref_layout.get('spacing', 'normal')}
+
+Match these design characteristics closely while creating original content for the user's request.
+If the reference uses a specific layout pattern (e.g. hero section, card grid, sidebar), replicate that structure.
+For image_keyword values, choose keywords that match the "{ref_image_style}" style.
+"""
+
     prompt = f"""You are a web designer. Given the user's request, produce a JSON site design spec. Return ONLY valid JSON, no other text.
 
 User request: {user_request}
@@ -145,16 +197,22 @@ Style hints: {style_hints or 'none'}
 Site name: {site_name}
 
 {content_instruction}
+{reference_instruction}
 
 Respond with a single JSON object in this exact shape (use it; include 1-4 pages as appropriate for the request):
 {{
   "title": "Site title for browser tab",
   "style": {{
     "primary_color": "#hex (e.g. #2563eb)",
+    "secondary_color": "#hex",
+    "accent_color": "#hex",
     "background_color": "#hex",
     "text_color": "#hex",
     "card_bg": "#hex",
-    "font_family": "e.g. 'Georgia', serif or system-ui, sans-serif"
+    "font_family": "e.g. 'Georgia', serif or system-ui, sans-serif",
+    "heading_font": "e.g. 'Playfair Display', serif (or same as font_family)",
+    "border_radius": "e.g. 0.5rem, 0, 1rem",
+    "spacing_scale": "compact | normal | spacious"
   }},
   "pages": [
     {{
@@ -188,7 +246,8 @@ Rules:
 - Every section can have "heading", "text", and optionally "image_keyword" for a relevant image.
 - Use "image_keyword" as a single word or short phrase for placeholder images (e.g. "nature", "office", "food", "design").
 - Style colors must be valid hex. Match the style_hints (e.g. dark theme = dark background, light text).
-- Generate specific, engaging copy; avoid generic "Lorem" or placeholder text unless no content was given."""
+- Generate specific, engaging copy; avoid generic "Lorem" or placeholder text unless no content was given.
+- heading_font and font_family should be valid CSS font stacks. If using Google Fonts, include just the font name with a generic fallback (e.g. "'Inter', sans-serif")."""
 
     try:
         response = llm.invoke(prompt)
@@ -202,16 +261,47 @@ Rules:
     return None
 
 
+def _google_fonts_link(font_family: str) -> str:
+    """Return a Google Fonts <link> tag if the font looks like a named Google Font, else empty string."""
+    system_fonts = {
+        "system-ui", "sans-serif", "serif", "monospace", "cursive", "fantasy",
+        "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "Helvetica Neue",
+        "Arial", "Noto Sans", "Liberation Sans", "Helvetica", "Georgia", "Times New Roman",
+    }
+    # Extract the first font name from the stack
+    first_font = font_family.split(",")[0].strip().strip("'\"")
+    if not first_font or first_font.lower() in {f.lower() for f in system_fonts}:
+        return ""
+    # Build Google Fonts URL
+    font_param = first_font.replace(" ", "+")
+    return f'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family={font_param}:wght@400;600;700&display=swap" rel="stylesheet">'
+
+
 def _render_site_from_spec(spec: Dict[str, Any], site_path: str, site_name: str) -> List[str]:
     """Render HTML and CSS from a design spec; returns list of files created."""
     style = spec.get("style", {})
     primary = style.get("primary_color", "#2563eb")
+    secondary = style.get("secondary_color", "#64748b")
+    accent = style.get("accent_color", primary)
     bg = style.get("background_color", "#f8fafc")
     text_color = style.get("text_color", "#1f2937")
     card_bg = style.get("card_bg", "#ffffff")
     font = style.get("font_family", "system-ui, sans-serif")
+    heading_font = style.get("heading_font", font)
+    border_radius = style.get("border_radius", "0.5rem")
+    spacing_scale = style.get("spacing_scale", "normal")
     title = spec.get("title", site_name)
     pages = spec.get("pages", [])
+
+    # Determine spacing multiplier
+    spacing_mult = {"compact": 0.7, "normal": 1.0, "spacious": 1.4}.get(spacing_scale, 1.0)
+    section_margin = f"{3 * spacing_mult:.1f}rem"
+    hero_padding = f"{3 * spacing_mult:.1f}rem"
+    main_padding = f"{2 * spacing_mult:.1f}rem"
+
+    # Build Google Fonts link tags
+    fonts_link = _google_fonts_link(font)
+    heading_fonts_link = _google_fonts_link(heading_font) if heading_font != font else ""
 
     nav_links = []
     for p in pages:
@@ -274,6 +364,8 @@ def _render_site_from_spec(spec: Dict[str, Any], site_path: str, site_name: str)
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{page_title}</title>
+    {fonts_link}
+    {heading_fonts_link}
     <link rel="stylesheet" href="{prefix}styles.css">
 </head>
 <body>
@@ -313,6 +405,14 @@ body {{
     background-color: {bg};
 }}
 
+h1, h2, h3, h4, h5, h6 {{
+    font-family: {heading_font};
+}}
+
+a {{
+    color: {accent};
+}}
+
 header {{
     background-color: {card_bg};
     padding: 1rem 2rem;
@@ -346,21 +446,21 @@ nav a {{
 }}
 
 nav a:hover {{
-    color: {primary};
+    color: {accent};
 }}
 
 main {{
     max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: {main_padding};
 }}
 
 .hero {{
     position: relative;
     text-align: center;
     padding: 0;
-    margin-bottom: 3rem;
-    border-radius: 0.5rem;
+    margin-bottom: {section_margin};
+    border-radius: {border_radius};
     overflow: hidden;
 }}
 
@@ -373,7 +473,7 @@ main {{
 }}
 
 .hero-content {{
-    padding: 3rem 2rem;
+    padding: {hero_padding} 2rem;
     position: relative;
 }}
 
@@ -385,11 +485,12 @@ main {{
 
 .hero-content p {{
     font-size: 1.2rem;
+    color: {secondary};
     margin-bottom: 1.5rem;
 }}
 
 .content-section {{
-    margin: 3rem 0;
+    margin: {section_margin} 0;
 }}
 
 .content-section h2 {{
@@ -402,7 +503,7 @@ main {{
     width: 100%;
     max-width: 800px;
     height: auto;
-    border-radius: 0.5rem;
+    border-radius: {border_radius};
     margin: 1rem 0;
     display: block;
 }}
@@ -415,7 +516,11 @@ footer {{
     background-color: {card_bg};
     text-align: center;
     padding: 2rem;
-    margin-top: 4rem;
+    margin-top: {f"{4 * spacing_mult:.1f}rem"};
+}}
+
+footer a {{
+    color: {accent};
 }}
 
 @media (max-width: 768px) {{
@@ -431,6 +536,290 @@ footer {{
     return files_created
 
 
+# ---------------------------------------------------------------------------
+# Reference site analysis helpers
+# ---------------------------------------------------------------------------
+
+# JavaScript snippet injected into the reference page to extract computed styles
+_EXTRACT_STYLES_JS = """
+() => {
+    const result = { colors: {}, fonts: {}, layout: {} };
+
+    // --- Color extraction ---
+    const colorCounts = {};
+    const bgCounts = {};
+    const allElements = document.querySelectorAll('body, body *');
+    const sample = Array.from(allElements).slice(0, 500);
+    sample.forEach(el => {
+        const style = window.getComputedStyle(el);
+        const color = style.color;
+        const bg = style.backgroundColor;
+        if (color && color !== 'rgba(0, 0, 0, 0)') {
+            colorCounts[color] = (colorCounts[color] || 0) + 1;
+        }
+        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+            bgCounts[bg] = (bgCounts[bg] || 0) + 1;
+        }
+    });
+
+    // Extract link/accent colors
+    const linkColors = {};
+    document.querySelectorAll('a, button, [class*="btn"], [class*="cta"]').forEach(el => {
+        const style = window.getComputedStyle(el);
+        const c = style.color;
+        const bg = style.backgroundColor;
+        if (c && c !== 'rgba(0, 0, 0, 0)') linkColors[c] = (linkColors[c] || 0) + 1;
+        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') linkColors[bg] = (linkColors[bg] || 0) + 1;
+    });
+
+    const sortByCount = obj => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+    result.colors.text_colors = sortByCount(colorCounts).slice(0, 5);
+    result.colors.background_colors = sortByCount(bgCounts).slice(0, 5);
+    result.colors.accent_colors = sortByCount(linkColors).slice(0, 5);
+
+    // Body background
+    const bodyStyle = window.getComputedStyle(document.body);
+    result.colors.body_background = bodyStyle.backgroundColor;
+    result.colors.body_text = bodyStyle.color;
+
+    // --- Font extraction ---
+    result.fonts.body_font = bodyStyle.fontFamily;
+    const h1 = document.querySelector('h1');
+    const h2 = document.querySelector('h2');
+    const h3 = document.querySelector('h3');
+    result.fonts.heading_font = (h1 && window.getComputedStyle(h1).fontFamily)
+        || (h2 && window.getComputedStyle(h2).fontFamily)
+        || (h3 && window.getComputedStyle(h3).fontFamily)
+        || result.fonts.body_font;
+    result.fonts.body_size = bodyStyle.fontSize;
+    result.fonts.heading_size = h1 ? window.getComputedStyle(h1).fontSize : '';
+
+    // --- Layout extraction ---
+    const header = document.querySelector('header, nav, [role="banner"]');
+    result.layout.has_header = !!header;
+    if (header) {
+        const hs = window.getComputedStyle(header);
+        result.layout.header_bg = hs.backgroundColor;
+        result.layout.header_position = hs.position;
+    }
+
+    // Hero detection
+    const hero = document.querySelector(
+        '[class*="hero"], [class*="banner"], [class*="jumbotron"], section:first-of-type'
+    );
+    result.layout.has_hero = !!hero;
+
+    // Card / grid detection
+    const cards = document.querySelectorAll('[class*="card"], [class*="tile"], [class*="feature"]');
+    result.layout.has_cards = cards.length > 0;
+    result.layout.card_count = cards.length;
+
+    // Grid / flex detection on main content
+    const main = document.querySelector('main, [role="main"], .container, .content');
+    if (main) {
+        const ms = window.getComputedStyle(main);
+        result.layout.main_display = ms.display;
+        result.layout.main_max_width = ms.maxWidth;
+    }
+
+    // Footer
+    result.layout.has_footer = !!document.querySelector('footer, [role="contentinfo"]');
+
+    // Sidebar
+    result.layout.has_sidebar = !!document.querySelector(
+        'aside, [class*="sidebar"], [role="complementary"]'
+    );
+
+    // Section count
+    result.layout.section_count = document.querySelectorAll('section').length;
+
+    return result;
+}
+"""
+
+
+def _rgb_to_hex(rgb_str: str) -> str:
+    """Convert an 'rgb(r, g, b)' or 'rgba(r, g, b, a)' string to '#rrggbb'."""
+    match = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", rgb_str)
+    if match:
+        r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return rgb_str
+
+
+def _pick_palette(raw_colors: dict) -> dict:
+    """Derive a five-color palette from raw extracted color data."""
+    bg_hex = _rgb_to_hex(raw_colors.get("body_background", "rgb(255,255,255)"))
+    text_hex = _rgb_to_hex(raw_colors.get("body_text", "rgb(0,0,0)"))
+
+    accent_list = [_rgb_to_hex(c) for c in raw_colors.get("accent_colors", [])]
+    bg_list = [_rgb_to_hex(c) for c in raw_colors.get("background_colors", [])]
+    text_list = [_rgb_to_hex(c) for c in raw_colors.get("text_colors", [])]
+
+    primary = accent_list[0] if accent_list else "#2563eb"
+    secondary = accent_list[1] if len(accent_list) > 1 else bg_list[1] if len(bg_list) > 1 else "#64748b"
+    accent = accent_list[2] if len(accent_list) > 2 else primary
+
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "background": bg_hex,
+        "text": text_hex,
+        "accent": accent,
+    }
+
+
+def _analyze_screenshot_with_vision(screenshot_path: str) -> dict:
+    """Use LLM vision to analyze a screenshot for layout, mood, and image style."""
+    import base64
+
+    llm = _get_site_spec_llm()
+    if not llm:
+        return {"mood": "", "image_style": "", "layout_description": ""}
+
+    with open(screenshot_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    from langchain_core.messages import HumanMessage as VisionHumanMessage
+
+    message = VisionHumanMessage(
+        content=[
+            {"type": "text", "text": (
+                "Analyze this website screenshot. Return ONLY valid JSON with these keys:\n"
+                '- "mood": one or two words describing the overall visual style (e.g. "minimal and clean", "bold and colorful", "corporate professional")\n'
+                '- "image_style": what kind of imagery is used (e.g. "photography", "illustrations", "icons", "abstract graphics", "none")\n'
+                '- "layout_description": brief description of the layout structure (e.g. "full-width hero with centered text, three-column feature cards, testimonial section, footer")\n'
+                '- "section_types": array of section types seen top to bottom (e.g. ["hero", "features_grid", "testimonials", "cta", "footer"])\n'
+                '- "border_radius": "sharp", "slightly_rounded", or "very_rounded"\n'
+                '- "spacing": "compact", "normal", or "spacious"\n'
+                "Return ONLY the JSON object, nothing else."
+            )},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+    )
+
+    try:
+        response = llm.invoke([message])
+        content = response.content if hasattr(response, "content") else str(response)
+        parsed = _extract_json_from_llm_response(content)
+        if parsed:
+            return parsed
+        logger.warning("Vision analysis did not return valid JSON; using raw text")
+        return {"mood": content[:200], "image_style": "", "layout_description": ""}
+    except Exception as e:
+        logger.warning(f"Vision analysis failed: {e}")
+        return {"mood": "", "image_style": "", "layout_description": ""}
+
+
+@tool
+def analyze_reference_site(url: str) -> ReferenceDesignResult:
+    """
+    Analyze a reference website to extract its visual design characteristics
+    (colors, fonts, layout, mood, imagery style). Use this when a user wants their
+    site to 'look like' or be 'similar to' an existing website.
+
+    Args:
+        url: The full URL of the reference website to analyze (e.g. "https://example.com")
+
+    Returns:
+        ReferenceDesignResult with extracted colors, fonts, layout info, mood, and image style
+    """
+    logger.info(f"Analyzing reference site: {url}")
+
+    # Validate URL
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return ReferenceDesignResult(
+            success=False, url=url,
+            message="Playwright is not installed. Run: pip install playwright && playwright install chromium",
+        )
+
+    raw_styles = {}
+    screenshot_path = None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
+
+            # Extract computed styles via JS
+            raw_styles = page.evaluate(_EXTRACT_STYLES_JS)
+
+            # Take full-page screenshot
+            tmp = tempfile.mkdtemp(prefix="ref-site-screenshot-")
+            screenshot_path = os.path.join(tmp, "screenshot.png")
+            page.screenshot(path=screenshot_path, full_page=True, timeout=15000)
+
+            browser.close()
+
+    except Exception as e:
+        logger.error(f"Playwright error analyzing {url}: {e}")
+        return ReferenceDesignResult(
+            success=False, url=url,
+            message=f"Failed to load reference site: {e}",
+        )
+
+    # Derive palette
+    raw_colors = raw_styles.get("colors", {})
+    palette = _pick_palette(raw_colors)
+
+    # Fonts
+    raw_fonts = raw_styles.get("fonts", {})
+    fonts = {
+        "heading_font": raw_fonts.get("heading_font", "system-ui, sans-serif"),
+        "body_font": raw_fonts.get("body_font", "system-ui, sans-serif"),
+    }
+
+    # Layout
+    layout = raw_styles.get("layout", {})
+
+    # Vision analysis
+    vision = {}
+    if screenshot_path and os.path.exists(screenshot_path):
+        vision = _analyze_screenshot_with_vision(screenshot_path)
+
+    mood = vision.get("mood", "")
+    image_style = vision.get("image_style", "")
+
+    # Merge vision layout info into layout dict
+    if vision.get("layout_description"):
+        layout["description"] = vision["layout_description"]
+    if vision.get("section_types"):
+        layout["section_types"] = vision["section_types"]
+    if vision.get("border_radius"):
+        layout["border_radius"] = vision["border_radius"]
+    if vision.get("spacing"):
+        layout["spacing"] = vision["spacing"]
+
+    logger.info(f"Reference analysis complete for {url}: palette={palette}, fonts={fonts}, mood={mood}")
+
+    return ReferenceDesignResult(
+        success=True,
+        url=url,
+        message=f"Successfully analyzed {url}. Extracted color palette, fonts, layout, and visual style.",
+        colors=palette,
+        fonts=fonts,
+        layout=layout,
+        mood=mood,
+        image_style=image_style,
+        screenshot_path=screenshot_path,
+    )
+
+
 @tool
 def generate_static_site(
     site_type: str,
@@ -438,6 +827,7 @@ def generate_static_site(
     site_name: Optional[str] = "mysite",
     user_request: Optional[str] = None,
     user_content: Optional[str] = None,
+    reference_design: Optional[str] = None,
 ) -> SiteGenerationResult:
     """
     Generate a static website based on user requirements. When user_request is provided,
@@ -451,6 +841,8 @@ def generate_static_site(
         user_request: Optional. The user's full request (e.g. "Create a photographer portfolio with an about and contact page").
                       When set, generates a customized multi-page site with images and generated or user-provided text.
         user_content: Optional. Text the user provided to include on the site; used when user_request is set.
+        reference_design: Optional. JSON string from analyze_reference_site containing extracted design
+                          characteristics (colors, fonts, layout, mood) of a reference website to emulate.
 
     Returns:
         SiteGenerationResult with success status, path, and details
@@ -461,6 +853,19 @@ def generate_static_site(
         logger.info(f"Custom design request: {user_request[:200]}...")
     if user_content:
         logger.info(f"User content provided: {user_content[:200]}...")
+    if reference_design:
+        logger.info(f"Reference design provided: {str(reference_design)[:200]}...")
+
+    # Parse reference_design from JSON string if needed
+    ref_design_dict = None
+    if reference_design:
+        if isinstance(reference_design, str):
+            try:
+                ref_design_dict = json.loads(reference_design)
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON in reference_design; ignoring")
+        elif isinstance(reference_design, dict):
+            ref_design_dict = reference_design
 
     try:
         tmp_dir = tempfile.mkdtemp(prefix=f"static-site-{site_name}-")
@@ -469,7 +874,7 @@ def generate_static_site(
         files_created = []
 
         if user_request:
-            spec = _generate_site_spec(user_request, user_content, site_type, style_hints, site_name)
+            spec = _generate_site_spec(user_request, user_content, site_type, style_hints, site_name, ref_design_dict)
             if spec:
                 files_created = _render_site_from_spec(spec, site_path, site_name)
             else:

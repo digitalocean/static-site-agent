@@ -17,7 +17,11 @@ RUN pip install --no-cache-dir \
     boto3>=1.34.0 \
     "langchain>=0.2.0,<0.3.0" \
     "langchain-openai>=0.1.0,<0.2.0" \
-    click>=8.1.7
+    click>=8.1.7 \
+    playwright>=1.40.0
+
+# Install Playwright Chromium browser and its OS dependencies
+RUN playwright install --with-deps chromium
 
 ENV PYTHONUNBUFFERED=1
 
