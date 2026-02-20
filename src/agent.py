@@ -206,6 +206,7 @@ ALWAYS use the tools when confirmed - never simulate or describe actions!"""),
         max_iterations = 15
         messages: List = [
             SystemMessage(content=self.gradient_system_prompt),
+            *self.chat_history,
             HumanMessage(content=message_text),
         ]
         for step in range(max_iterations):
