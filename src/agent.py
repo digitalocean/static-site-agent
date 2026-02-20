@@ -150,11 +150,12 @@ Available tools:
 9. write_file - Args: file_path, content. Writes content to a file. Use only for paths under temp dir. After editing, call deploy_to_spaces to save back.
 
 Rules:
-- When the user references another website URL or says "looks like", "similar to", or "inspired by" another site, FIRST call analyze_reference_site(url) to extract the design. Tell the user what you found (colors, fonts, mood). THEN call generate_static_site with the analysis result as the reference_design parameter (pass it as a JSON string).
-- When the user asks for a site (without a reference), output a TOOL_CALL for generate_static_site. Always pass the user's full message as user_request so the site is customized (multi-page, images, relevant or user text). Use the returned site_path in later steps.
+- CONFIRMATION REQUIRED: Before creating, editing, or deleting a site, you MUST first ask the user for confirmation. Do NOT call the tool immediately. Instead, output a FINAL_ANSWER describing what you are about to do and ask "Do you want to proceed?" or similar. Only after the user confirms (e.g. "yes", "sure", "go ahead", "do it") should you execute the action by calling the tool. For DELETE, warn that this is permanent and cannot be undone.
+- When the user references another website URL or says "looks like", "similar to", or "inspired by" another site, FIRST call analyze_reference_site(url) to extract the design. Tell the user what you found (colors, fonts, mood). THEN ask for confirmation before calling generate_static_site.
+- When the user asks for a site (without a reference), DO NOT immediately call generate_static_site. First confirm with the user what you plan to create (site type, name, style), then after they confirm, call generate_static_site. Always pass the user's full message as user_request so the site is customized (multi-page, images, relevant or user text). Use the returned site_path in later steps.
 - When the user wants to list their sites, call list_spaces_buckets. In your reply, include the full URL for each site (from the tool result) so the user can click to open the site in a new window.
-- When the user wants to EDIT an existing site: (1) call list_spaces_buckets if they need to pick a site, (2) call download_site_from_spaces(bucket_name) to get site_path, (3) call read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) call write_file with the modified content, (5) call deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
-- When the user wants to DELETE a site, call delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
+- When the user wants to EDIT an existing site: first confirm with the user what changes they want before making them. Then (1) call list_spaces_buckets if they need to pick a site, (2) call download_site_from_spaces(bucket_name) to get site_path, (3) call read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) call write_file with the modified content, (5) call deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
+- When the user wants to DELETE a site, DO NOT immediately call delete_site_from_spaces. First warn the user that this will permanently delete the site and all its files, and ask for confirmation. Only after they confirm, call delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
 - When the user wants to deploy to Spaces, output TOOL_CALL for deploy_to_spaces with site_path (from a previous result) and bucket_name. {spaces_info}
 - Output only TOOL_CALL + JSON or FINAL_ANSWER + text. No other commentary before or after."""
             self.agent_executor = None
@@ -175,16 +176,17 @@ Rules:
 9. write_file(file_path, content) - Writes content to a file. After editing files, call deploy_to_spaces(site_path, bucket_name) to save the site back to the bucket.
 
 CRITICAL INSTRUCTIONS:
-- When user references another website URL or says "looks like", "similar to", or "inspired by" another site, FIRST call analyze_reference_site(url) to extract the design. Tell the user what you found (colors, fonts, mood). THEN call generate_static_site with the analysis result as the reference_design parameter (pass it as a JSON string).
-- When user asks for a site (without a reference), IMMEDIATELY call generate_static_site - don't just talk about it!
+- CONFIRMATION REQUIRED: Before creating, editing, or deleting a site, you MUST first ask the user for confirmation. Do NOT call the tool immediately. Instead, describe what you are about to do and ask "Do you want to proceed?" or similar. Only after the user confirms (e.g. "yes", "sure", "go ahead", "do it") should you execute the action. For DELETE, warn that this is permanent and cannot be undone.
+- When user references another website URL or says "looks like", "similar to", or "inspired by" another site, FIRST call analyze_reference_site(url) to extract the design. Tell the user what you found (colors, fonts, mood). THEN ask for confirmation before calling generate_static_site with the analysis result as the reference_design parameter (pass it as a JSON string).
+- When user asks for a site (without a reference), DO NOT immediately call generate_static_site. First confirm with the user what you plan to create (site type, name, style), and only after they confirm, call generate_static_site.
 - When user wants to LIST their sites, call list_spaces_buckets. In your reply, include the full URL for each site (from the tool result) so the user can click to open the site in a new window.
-- When user wants to EDIT an existing site: (1) list_spaces_buckets if needed to identify the bucket, (2) download_site_from_spaces(bucket_name) to get site_path, (3) read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) write_file with your changes, (5) deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
-- When user wants to DELETE a site, use delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
+- When user wants to EDIT an existing site: first confirm with the user what changes they want before making them. Then (1) list_spaces_buckets if needed to identify the bucket, (2) download_site_from_spaces(bucket_name) to get site_path, (3) read_file(site_path + "/index.html") and/or read_file(site_path + "/styles.css"), (4) write_file with your changes, (5) deploy_to_spaces(site_path, bucket_name) to save back to the bucket.
+- When user wants to DELETE a site, DO NOT immediately call delete_site_from_spaces. First warn the user that this will permanently delete the site and all its files, and ask for confirmation. Only after they confirm, call delete_site_from_spaces(bucket_name). Use the exact bucket name (e.g. from list_spaces_buckets).
 - When user wants to deploy or save to Spaces, use deploy_to_spaces(site_path, bucket_name, ...). You need site_path (from generate_static_site or download_site_from_spaces) and bucket_name (ask if not provided).
 - After each tool completes, tell the user what happened based on the tool's output.
 - {spaces_info}
 
-ALWAYS use the tools - never simulate or describe actions!"""),
+ALWAYS use the tools when confirmed - never simulate or describe actions!"""),
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("user", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),

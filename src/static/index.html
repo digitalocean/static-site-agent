@@ -362,8 +362,17 @@
             const urlRegex = /(https?:\/\/[^\s<>"\']+)/g;
             const urls = [];
             const withPlaceholders = text.replace(urlRegex, (url) => {
-                // Strip trailing sentence punctuation so the link href works (e.g. "https://...index.html." -> "https://...index.html")
-                const cleanUrl = url.replace(/[.,;:!?]+$/, '');
+                let cleanUrl = url.replace(/[.,;:!?]+$/, '');
+                // Strip trailing unbalanced closing parentheses (e.g. URL wrapped in parens)
+                while (cleanUrl.endsWith(')')) {
+                    const opens = (cleanUrl.match(/\(/g) || []).length;
+                    const closes = (cleanUrl.match(/\)/g) || []).length;
+                    if (closes > opens) {
+                        cleanUrl = cleanUrl.slice(0, -1);
+                    } else {
+                        break;
+                    }
+                }
                 urls.push(cleanUrl);
                 return '\u0001URL' + (urls.length - 1) + '\u0001';
             });
