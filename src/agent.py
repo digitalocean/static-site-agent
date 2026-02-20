@@ -107,19 +107,16 @@ class Agent:
         ]
         
         # 2. Setup LLM
-        # Check which API key is available
         openai_key = os.getenv('OPENAI_API_KEY')
         do_gradient_key = os.getenv('DO_GRADIENT_API_KEY')
         
         self.use_gradient_tool_loop = bool(do_gradient_key)
         if openai_key:
-            # Use OpenAI with native tool calling
             self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
         elif do_gradient_key:
-            # Use DigitalOcean Gradient; we'll use a custom JSON tool loop (no ReAct parsing)
             self.llm = ChatOpenAI(
-                model="llama3.3-70b-instruct",
-                temperature=0.2,
+                model="claude-sonnet-4-5-20250929",
+                temperature=0.7,
                 api_key=do_gradient_key,
                 base_url="https://inference.do-ai.run/v1"
             )
@@ -217,17 +214,9 @@ ALWAYS use the tools - never simulate or describe actions!"""),
             content = content.strip()
             logger.info(f"Gradient step {step + 1} LLM output (first 400 chars): {content[:400]}")
 
-            # Parse FINAL_ANSWER
-            if "FINAL_ANSWER" in content.upper():
-                idx = content.upper().find("FINAL_ANSWER")
-                rest = content[idx + len("FINAL_ANSWER"):].strip()
-                # Take the rest of the line or block as the answer
-                rest = rest.lstrip(":\n\t").strip()
-                if rest:
-                    return rest
-                return content  # fallback
-
-            # Parse TOOL_CALL + JSON or a raw JSON object
+            # Parse TOOL_CALL + JSON first (takes priority over FINAL_ANSWER so that
+            # stray mentions of "FINAL_ANSWER" in the LLM's reasoning don't
+            # short-circuit an intended tool call).
             json_str = None
             tool_call_match = re.search(r"TOOL_CALL\s*\n?\s*(\{[\s\S]*\})", content, re.IGNORECASE)
             if tool_call_match:
@@ -242,8 +231,17 @@ ALWAYS use the tools - never simulate or describe actions!"""),
                     brace = content.find("{'tool'")
                 if brace >= 0:
                     json_str = _extract_first_json(content[brace:])
+
+            # No tool call found -- check for FINAL_ANSWER (must appear at the
+            # very start of the output, ignoring leading whitespace).
             if not json_str:
-                # No tool call parsed; treat as final answer
+                fa_match = re.match(r"\s*FINAL_ANSWER\s*[:\n]?\s*([\s\S]*)", content, re.IGNORECASE)
+                if fa_match:
+                    rest = fa_match.group(1).strip()
+                    if rest:
+                        return rest
+                    return content
+                # No tool call or final-answer marker; treat as plain reply.
                 return content
 
             try:
