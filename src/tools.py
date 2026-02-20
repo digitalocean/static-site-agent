@@ -94,7 +94,7 @@ def _get_site_spec_llm():
         return ChatOpenAI(model="gpt-4o-mini", temperature=0.6)
     if do_gradient_key:
         return ChatOpenAI(
-            model="claude-sonnet-4-5-20250929",
+            model="anthropic-claude-4.5-sonnet",
             temperature=0.6,
             api_key=do_gradient_key,
             base_url="https://inference.do-ai.run/v1",
