@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 import click
@@ -55,8 +56,8 @@ async def handle_rpc(request: JsonRpcRequest):
             
             logger.info(f"Received message: {input_text}")
             
-            # 2. Invoke Agent Logic
-            response_text = agent.process_message(input_text)
+            # 2. Invoke Agent Logic (run in a thread so sync libs like Playwright work)
+            response_text = await asyncio.to_thread(agent.process_message, input_text)
             
             # 3. Construct Response
             task_id = str(uuid.uuid4())
